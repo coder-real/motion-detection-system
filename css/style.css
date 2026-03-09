@@ -2335,6 +2335,166 @@ a {
   }
 }
 
+/* ============================================================ THEME TOGGLE BUTTON */
+#theme-toggle {
+  background: var(--surface-3);
+  border: 1px solid var(--border-hi);
+  border-radius: 100px;
+  cursor: pointer;
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  transition:
+    background var(--trans),
+    border-color var(--trans),
+    box-shadow var(--trans);
+  flex-shrink: 0;
+}
+
+#theme-toggle:hover {
+  background: var(--surface-4);
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.05);
+}
+
+.theme-toggle-track {
+  display: flex;
+  align-items: center;
+  width: 52px;
+  height: 26px;
+  position: relative;
+}
+
+.theme-toggle-thumb {
+  position: absolute;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  background: var(--white-90);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background var(--trans);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+body.light .theme-toggle-thumb {
+  transform: translateX(26px);
+  background: #0a0c10;
+}
+
+.theme-icon {
+  width: 13px;
+  height: 13px;
+  position: absolute;
+  transition:
+    opacity 0.2s ease,
+    transform 0.3s ease;
+}
+
+/* Dark mode: show moon, hide sun */
+.theme-icon-moon {
+  opacity: 1;
+  transform: rotate(0deg);
+  color: var(--void);
+}
+.theme-icon-sun {
+  opacity: 0;
+  transform: rotate(90deg);
+  color: #ffffff;
+}
+
+/* Light mode: hide moon, show sun */
+body.light .theme-icon-moon {
+  opacity: 0;
+  transform: rotate(-90deg);
+}
+body.light .theme-icon-sun {
+  opacity: 1;
+  transform: rotate(0deg);
+}
+
+/* ============================================================ CAMERA SELECTOR (PILL BUTTONS) */
+.cam-selector-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  padding: 3px;
+  gap: 2px;
+}
+
+/* Individual camera pill button */
+.cam-btn {
+  background: transparent;
+  border: none;
+  border-radius: 100px;
+  padding: 5px 14px;
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--white-45);
+  cursor: pointer;
+  transition:
+    background var(--trans),
+    color var(--trans),
+    box-shadow var(--trans);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cam-btn:hover {
+  color: var(--white-90);
+  background: var(--surface-3);
+}
+
+.cam-btn.active {
+  background: var(--red);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(204, 0, 0, 0.35);
+}
+
+/* Light mode overrides for camera pills */
+body.light .cam-selector-wrap {
+  background: #eaecf2;
+  border-color: rgba(0, 0, 0, 0.16);
+}
+
+body.light .cam-btn {
+  color: #505666;
+}
+
+body.light .cam-btn:hover {
+  color: #0a0c10;
+  background: #dde1ea;
+}
+
+body.light .cam-btn.active {
+  background: #b80000;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(184, 0, 0, 0.3);
+}
+
+/* Light mode override for the toggle button track */
+body.light #theme-toggle {
+  background: #dde1ea;
+  border-color: rgba(0, 0, 0, 0.2);
+}
+
+body.light #theme-toggle:hover {
+  background: #cdd1dc;
+  border-color: rgba(0, 0, 0, 0.32);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.05);
+}
+
 /* ============================================================ LIGHT MODE */
 body.light {
   --black: #ffffff;
