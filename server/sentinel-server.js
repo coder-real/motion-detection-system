@@ -414,13 +414,6 @@ async function pushCommandToESP32(cmd) {
     log("CMD", `Pre-mark failed: ${preErr.message} — pushing anyway`);
   }
 
-<<<<<<< HEAD
-  // Push to ESP32 if connected
-  if (!esp32Socket || esp32Socket.readyState !== WebSocket.OPEN) {
-    log(
-      "CMD",
-      `ESP32 not connected — command id=${id.slice(0, 8)} marked failed`,
-=======
   // Route to the correct device socket
   const targetSocket = deviceSockets.get(device_id);
   if (!targetSocket || targetSocket.readyState !== WebSocket.OPEN) {
@@ -428,7 +421,6 @@ async function pushCommandToESP32(cmd) {
     log(
       "CMD",
       `${device_id} not connected (connected: ${connected}) — id=${id.slice(0, 8)} failed`,
->>>>>>> 02b7b69 (render link updated)
     );
     metrics.commands.ackFailed++;
     await supa.from("commands").update({ status: "failed" }).eq("id", id);
