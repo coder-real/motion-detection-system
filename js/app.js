@@ -1,0 +1,1162 @@
+// ============================================================
+// SENTINEL SURVEILLANCE DASHBOARD — app.js v5.0
+// WebSocket Push Architecture
+//   ✅ Commands pushed via WebSocket (<100ms, was 3s poll)
+//   ✅ Snapshot button unlocks when new event arrives via Realtime
+//   ✅ Server health pill (GET /health from sentinel-server.js)
+//   ✅ Realtime subscriptions filtered to device only
+//   ✅ Append-only DOM updates — no full re-render
+//   ✅ Startup, motion, manual all update camera feed
+// ============================================================
+
+import { db } from "./supabaseClient.js";
+
+// Read from js/config.js — update that file, not here
+const { CAM_DEVICE_ID, SENTINEL_SERVER_URL } = window.SENTINEL_CONFIG;
+const SERVER_URL = SENTINEL_SERVER_URL;
+
+// ============================================================
+// STATE
+// ============================================================
+const state = {
+  events: [],
+  devices: [],
+  logs: [],
+  heartbeats: [],
+  map: null,
+  fullMap: null,
+  markers: [],
+  fullMarkers: [],
+  currentView: "dashboard",
+  unreadAlerts: 0,
+  galleryFilter: "all",
+  latestImageUrl: null,
+  deviceStats: {}, // keyed by device_id → latest heartbeat
+  serverOnline: false,
+  gpsState: {
+    valid: false,
+    satellites: 0,
+    latitude: null,
+    longitude: null,
+    lastFixTime: null,
+    lastDistance: null,
+  },
+};
+
+// ============================================================
+// DOM CACHE
+// ============================================================
+const _c = {};
+const el = (id) => _c[id] || (_c[id] = document.getElementById(id));
+const $ = (s, ctx) => (ctx || document).querySelector(s);
+const $$ = (s, ctx) => [...(ctx || document).querySelectorAll(s)];
+
+// ============================================================
+// TIME HELPERS
+// ============================================================
+function timeAgo(iso) {
+  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+function formatTime(iso) {
+  return new Date(iso).toLocaleTimeString("en-US", { hour12: false });
+}
+function formatDateTime(iso) {
+  return new Date(iso).toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+function formatDateTimeShort(iso) {
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+// ============================================================
+// CLOCK
+// ============================================================
+function startClock() {
+  const tick = () => {
+    const e = el("clock");
+    if (e)
+      e.textContent = new Date().toLocaleTimeString("en-US", { hour12: false });
+  };
+  tick();
+  setInterval(tick, 1000);
+}
+
+// ============================================================
+// NAV
+// ============================================================
+function setupNav() {
+  $$(".nav-item[data-view]").forEach((item) =>
+    item.addEventListener("click", () => switchView(item.dataset.view)),
+  );
+  $$("[data-view]:not(.nav-item)").forEach((item) =>
+    item.addEventListener("click", () => switchView(item.dataset.view)),
+  );
+}
+
+function switchView(view) {
+  state.currentView = view;
+  $$(".nav-item").forEach((n) => n.classList.remove("active"));
+  $(`.nav-item[data-view="${view}"]`)?.classList.add("active");
+  $$(".view").forEach((v) => v.classList.remove("active"));
+  el(`view-${view}`)?.classList.add("active");
+  if (view === "gallery") renderGallery();
+  if (view === "logs") renderLogsFull();
+  if (view === "devices") renderDevicesFull();
+  if (view === "map") {
+    initFullMap();
+    setTimeout(() => state.fullMap?.invalidateSize(), 80);
+  }
+}
+
+// ============================================================
+// LOAD INITIAL DATA
+// ============================================================
+async function loadInitialData() {
+  try {
+    const [eventsRes, devicesRes, logsRes, hbRes] = await Promise.all([
+      db
+        .from("events")
+        .select(
+          "id,device_id,triggered_by,snapshot_type,latitude,longitude,snapshot_url,distance_cm,sms_sent,created_at",
+        )
+        .order("created_at", { ascending: false })
+        .limit(50),
+      db.from("devices").select("*").order("last_seen", { ascending: false }),
+      db
+        .from("logs")
+        .select("id,level,category,message,created_at")
+        .order("created_at", { ascending: false })
+        .limit(200),
+      db
+        .from("heartbeats")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(50),
+    ]);
+
+    state.events = eventsRes.data || [];
+    state.devices = devicesRes.data || [];
+    state.logs = logsRes.data || [];
+    state.heartbeats = hbRes.data || [];
+
+    state.heartbeats.forEach((hb) => {
+      if (!state.deviceStats[hb.device_id])
+        state.deviceStats[hb.device_id] = hb;
+    });
+
+    const latestGPS = state.events.find(
+      (e) => e.latitude && Math.abs(e.latitude) > 0.001,
+    );
+    if (latestGPS) updateGPSState(latestGPS);
+
+    const latest = state.events.find((e) => e.snapshot_url);
+    if (latest)
+      updateCameraImage(latest.snapshot_url, latest.created_at, latest);
+
+    renderAll();
+  } catch (err) {
+    console.error("[INIT]", err);
+    showToast(
+      "error",
+      "Load Failed",
+      err.message || "Cannot reach cloud",
+      7000,
+    );
+  }
+}
+
+// ============================================================
+// SERVER HEALTH CHECK
+// Called at init and every 30s. Shows "Server" pill in topbar.
+// ============================================================
+async function checkServerHealth() {
+  try {
+    const res = await fetch(`${SERVER_URL}/health`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      state.serverOnline = true;
+      const esp32 = data.esp32 === "connected";
+      setPill(
+        "pill-server",
+        "online",
+        esp32 ? "green" : "yellow",
+        esp32 ? "Server+ESP32" : "Server only",
+      );
+    } else {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  } catch {
+    state.serverOnline = false;
+    setPill("pill-server", "offline", "red", "Server offline");
+  }
+}
+
+// ============================================================
+// RENDER ALL
+// ============================================================
+function renderAll() {
+  renderStats();
+  renderEventFeed();
+  renderDeviceCards();
+  renderLogFeed();
+  renderMapMarkers();
+  renderGPSBar();
+  updateTopbarPills();
+  updateTopbarStatus();
+}
+
+// ============================================================
+// STATS
+// ============================================================
+function renderStats() {
+  const today = new Date().toDateString();
+  const todayMotion = state.events.filter(
+    (e) =>
+      new Date(e.created_at).toDateString() === today &&
+      e.snapshot_type === "motion",
+  ).length;
+  const online = state.devices.filter((d) => d.status === "online").length;
+  const last = state.events[0];
+  const coords = last?.latitude
+    ? `${last.latitude.toFixed(4)}, ${last.longitude.toFixed(4)}`
+    : "—";
+
+  setVal("stat-total", state.events.length);
+  setVal("stat-today", todayMotion);
+  setVal("stat-devices", `${online}/${state.devices.length}`);
+  setVal("stat-last-coords", coords);
+
+  const badge = el("alert-badge");
+  if (badge) {
+    badge.textContent = state.unreadAlerts;
+    badge.style.display = state.unreadAlerts > 0 ? "inline-flex" : "none";
+  }
+}
+function setVal(id, v) {
+  const e = el(id);
+  if (e) e.textContent = v;
+}
+
+// ============================================================
+// CAMERA IMAGE
+// ============================================================
+function updateCameraImage(url, timestamp, event) {
+  if (!url) return;
+  state.latestImageUrl = url;
+
+  const imgEl = el("live-img");
+  const tsEl = el("live-timestamp");
+  const overlay = el("live-overlay");
+  const loadEl = el("live-loading");
+
+  if (loadEl) loadEl.classList.add("visible");
+
+  if (imgEl) {
+    const src = url + "?t=" + Date.now();
+    const preloader = new Image();
+    preloader.onload = () => {
+      imgEl.src = src;
+      imgEl.style.display = "block";
+      overlay?.classList.add("hidden");
+      loadEl?.classList.remove("visible");
+      flashCapture();
+    };
+    preloader.onerror = () => loadEl?.classList.remove("visible");
+    preloader.src = src;
+  }
+
+  if (tsEl && timestamp) tsEl.textContent = formatDateTime(timestamp);
+
+  const fullImg = el("live-img-full");
+  const fullOver = el("live-overlay-full");
+  if (fullImg && url) {
+    fullImg.src = url + "?t=" + Date.now();
+    fullImg.style.display = "block";
+    fullOver?.classList.add("hidden");
+  }
+  if (el("live-timestamp-full") && timestamp)
+    el("live-timestamp-full").textContent = formatDateTime(timestamp);
+
+  if (event) {
+    setVal("live-type-full", event.snapshot_type || "—");
+    const gpsText =
+      event.latitude && Math.abs(event.latitude) > 0.001
+        ? `${event.latitude.toFixed(5)}, ${event.longitude.toFixed(5)}`
+        : "No GPS Fix";
+    setVal("live-gps-full", gpsText);
+    addToRecentCaptures(event);
+  }
+}
+
+function flashCapture() {
+  const wrap = $(".live-feed-wrap");
+  if (!wrap) return;
+  const f = document.createElement("div");
+  f.className = "live-flash";
+  wrap.appendChild(f);
+  setTimeout(() => f.remove(), 350);
+}
+
+function addToRecentCaptures(event) {
+  const list = el("live-recent");
+  if (!list) return;
+  const div = document.createElement("div");
+  div.className = "recent-capture-item";
+  if (event.snapshot_url) {
+    const img = document.createElement("img");
+    img.src = event.snapshot_url;
+    img.className = "recent-thumb";
+    img.loading = "lazy";
+    div.appendChild(img);
+  }
+  const info = document.createElement("div");
+  info.innerHTML = `
+    <div class="recent-type ${event.snapshot_type || ""}">${(event.snapshot_type || "—").toUpperCase()}</div>
+    <div class="recent-time">${formatDateTimeShort(event.created_at)}</div>
+  `;
+  div.appendChild(info);
+  div.addEventListener("click", () => openLightbox(event));
+  list.prepend(div);
+  while (list.children.length > 12) list.removeChild(list.lastChild);
+}
+
+// ============================================================
+// SNAPSHOT BUTTON
+// Commands are now pushed via WebSocket (<100ms) — not polled.
+// Dashboard inserts a row → Supabase Realtime → Node server →
+// WebSocket push → ESP32 executes → ack → DB updated.
+// Button stays locked until new event arrives via Realtime.
+// ============================================================
+let snapshotPending = false;
+
+function setupSnapshotButton() {
+  ["btn-snapshot", "btn-snapshot-2"].forEach((id) => {
+    el(id)?.addEventListener("click", triggerSnapshot);
+  });
+}
+
+async function triggerSnapshot() {
+  if (snapshotPending) {
+    showToast("info", "Please Wait", "Snapshot in progress...", 2000);
+    return;
+  }
+
+  snapshotPending = true;
+  const btns = ["btn-snapshot", "btn-snapshot-2", "btn-snapshot-full"]
+    .map((id) => el(id))
+    .filter(Boolean);
+
+  btns.forEach((b) => {
+    b.disabled = true;
+    b.classList.add("btn-loading");
+    b._origText = b.innerHTML;
+    b.innerHTML = `<div class="btn-spinner" style="width:12px;height:12px;border-width:2px"></div> Capturing...`;
+  });
+
+  el("live-loading")?.classList.add("visible");
+
+  try {
+    // Delete any stale pending/processing commands so the new
+    // one is the only thing the server will receive via Realtime.
+    const { error: delError } = await db
+      .from("commands")
+      .delete()
+      .eq("device_id", CAM_DEVICE_ID)
+      .in("status", ["pending", "processing"]);
+    if (delError) console.warn("[CMD] Delete stale failed:", delError.message);
+
+    const { error } = await db.from("commands").insert({
+      device_id: CAM_DEVICE_ID,
+      command: "capture",
+      status: "pending",
+    });
+    if (error) throw error;
+
+    // With WebSocket push, command arrives at ESP32 in <100ms.
+    // Capture + upload takes ~2-4s. Total: ~3-5s.
+    showToast(
+      "info",
+      "Snapshot Sent",
+      "Camera capturing via WebSocket (~2-4s)...",
+      8000,
+    );
+
+    // Safety timeout — if no image arrives in 20s, release anyway
+    setTimeout(() => {
+      if (snapshotPending) {
+        snapshotPending = false;
+        unlockSnapshotButtons();
+        el("live-loading")?.classList.remove("visible");
+        showToast(
+          "warn",
+          "Timeout",
+          "No image in 20s — check server is running",
+          5000,
+        );
+      }
+    }, 20000);
+  } catch (err) {
+    snapshotPending = false;
+    unlockSnapshotButtons();
+    el("live-loading")?.classList.remove("visible");
+    showToast(
+      "error",
+      "Command Failed",
+      err.message || "Could not reach database",
+      5000,
+    );
+  }
+}
+
+function unlockSnapshotButtons() {
+  ["btn-snapshot", "btn-snapshot-2", "btn-snapshot-full"]
+    .map((id) => el(id))
+    .filter(Boolean)
+    .forEach((b) => {
+      b.disabled = false;
+      b.classList.remove("btn-loading");
+      if (b._origText) {
+        b.innerHTML = b._origText;
+        delete b._origText;
+      }
+    });
+}
+
+// ============================================================
+// GPS STATE + STATUS BAR
+// ============================================================
+function updateGPSState(event) {
+  if (!event) return;
+  const valid =
+    event.latitude && event.longitude && Math.abs(event.latitude) > 0.001;
+  if (valid) {
+    state.gpsState.valid = true;
+    state.gpsState.latitude = event.latitude;
+    state.gpsState.longitude = event.longitude;
+    state.gpsState.lastFixTime = event.created_at;
+  }
+  if (event.distance_cm) state.gpsState.lastDistance = event.distance_cm;
+}
+
+function renderGPSBar() {
+  const sats = state.gpsState.satellites || 0;
+  const valid = state.gpsState.valid;
+
+  let label, sub, cls;
+  if (!valid) {
+    if (sats === 0) {
+      label = "No GPS Fix";
+      sub = "No satellite signal";
+      cls = "fix-none";
+    } else {
+      label = "Searching...";
+      sub = `${sats} satellite${sats !== 1 ? "s" : ""} visible`;
+      cls = "fix-search";
+    }
+  } else if (sats >= 7) {
+    label = "3D Fix — Strong";
+    sub = `${sats} satellites · High accuracy`;
+    cls = "fix-strong";
+  } else if (sats >= 4) {
+    label = "3D Fix — Good";
+    sub = `${sats} satellites · Standard accuracy`;
+    cls = "fix-good";
+  } else if (sats >= 1) {
+    label = "2D Fix — Weak";
+    sub = `${sats} satellite${sats !== 1 ? "s" : ""} · Low accuracy`;
+    cls = "fix-weak";
+  } else {
+    label = "3D Fix";
+    sub = "Valid location";
+    cls = "fix-good";
+  }
+
+  const iconWrap = el("gps-icon-wrap");
+  if (iconWrap) iconWrap.className = `gps-icon-wrap ${cls}`;
+
+  const fixLabel = el("gps-fix-label");
+  if (fixLabel) {
+    fixLabel.textContent = label;
+    fixLabel.className = `gps-fix-label ${cls}`;
+  }
+  setVal("gps-fix-sub", sub);
+  setVal("gps-sats", sats);
+
+  $$(".gps-sat-bar", el("gps-sats-display")).forEach((bar, i) =>
+    bar.classList.toggle("active", i < Math.min(sats, 8)),
+  );
+
+  setVal(
+    "gps-coords",
+    state.gpsState.latitude
+      ? `${state.gpsState.latitude.toFixed(6)}, ${state.gpsState.longitude.toFixed(6)}`
+      : "No fix",
+  );
+  setVal(
+    "gps-last-fix",
+    state.gpsState.lastFixTime
+      ? formatDateTime(state.gpsState.lastFixTime)
+      : "—",
+  );
+  setVal(
+    "gps-last-distance",
+    state.gpsState.lastDistance ? `${state.gpsState.lastDistance} cm` : "—",
+  );
+
+  const dotColor =
+    {
+      "fix-strong": "green",
+      "fix-good": "green",
+      "fix-weak": "orange",
+      "fix-search": "yellow",
+      "fix-none": "red",
+    }[cls] || "grey";
+  const pillState =
+    cls === "fix-none" ? "error" : cls === "fix-search" ? "warn" : "online";
+  setPill(
+    "pill-gps",
+    pillState,
+    dotColor,
+    sats > 0 ? `${sats} Sats` : "No Fix",
+  );
+}
+
+// ============================================================
+// TOPBAR PILLS
+// ============================================================
+function updateTopbarPills() {
+  const camDev = state.devices.find(
+    (d) => d.device_id === CAM_DEVICE_ID || d.device_type?.includes("cam"),
+  );
+  const latestHB = state.deviceStats[CAM_DEVICE_ID];
+  const camOnline = camDev?.status === "online";
+
+  setPill(
+    "pill-camera",
+    camOnline ? "online" : "offline",
+    camOnline ? "green" : "grey",
+    camOnline ? "Online" : "Offline",
+  );
+
+  const rssi = latestHB?.rssi;
+  setPill(
+    "pill-wifi",
+    camOnline ? "online" : "offline",
+    camOnline ? (rssi && rssi > -70 ? "green" : "yellow") : "grey",
+    rssi ? `${rssi} dBm` : camOnline ? "Connected" : "—",
+  );
+
+  const recentMotion = state.events.find((e) => e.snapshot_type === "motion");
+  const espActive =
+    recentMotion && Date.now() - new Date(recentMotion.created_at) < 600000;
+  setPill(
+    "pill-espnow",
+    espActive ? "online" : "offline",
+    espActive ? "green" : "grey",
+    espActive ? "Active" : "Standby",
+  );
+
+  const smsSent = state.events.find((e) => e.sms_sent);
+  setPill(
+    "pill-gsm",
+    smsSent ? "online" : "offline",
+    smsSent ? "green" : "grey",
+    smsSent ? "Ready" : "Unknown",
+  );
+}
+
+function setPill(id, state, dotColor, text) {
+  const pill = el(id);
+  const dot = el(`${id}-dot`);
+  const textEl = el(`${id}-text`);
+  if (!pill) return;
+  pill.className = `status-pill ${state}`;
+  if (dot) dot.className = `pill-dot ${dotColor}`;
+  if (textEl) textEl.textContent = text;
+}
+
+function updateTopbarStatus() {
+  const online = state.devices.filter((d) => d.status === "online").length;
+  const total = state.devices.length;
+  setVal("topbar-device-status", `${online}/${total} Devices`);
+  const dot = el("topbar-device-dot");
+  if (dot)
+    dot.className =
+      "status-dot" + (online === 0 ? " off" : online < total ? " warn" : "");
+}
+
+// ============================================================
+// EVENT FEED — fragment-based, append-only
+// ============================================================
+function renderEventFeed() {
+  const feed = el("event-feed");
+  if (!feed) return;
+  if (state.events.length === 0) {
+    feed.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><p class="empty-text">No events yet</p><p class="empty-sub">Waiting for motion or manual capture</p></div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  state.events
+    .slice(0, 25)
+    .forEach((e) => frag.appendChild(createEventItem(e)));
+  feed.innerHTML = "";
+  feed.appendChild(frag);
+}
+
+function prependEventToFeed(event) {
+  const feed = el("event-feed");
+  if (!feed) return;
+  const empty = feed.querySelector(".empty-state");
+  if (empty) feed.innerHTML = "";
+  feed.insertBefore(createEventItem(event), feed.firstChild);
+  while (feed.children.length > 25) feed.removeChild(feed.lastChild);
+}
+
+function createEventItem(event) {
+  const div = document.createElement("div");
+  div.className = "event-item";
+  const sensor = event.triggered_by || "unknown";
+  const snapType = event.snapshot_type || "motion";
+  const coords =
+    event.latitude && Math.abs(event.latitude) > 0.001
+      ? `${event.latitude.toFixed(5)}, ${event.longitude.toFixed(5)}`
+      : "No GPS Fix";
+  div.innerHTML = `
+    ${
+      event.snapshot_url
+        ? `<img class="event-thumb" src="${event.snapshot_url}" alt="snap" loading="lazy">`
+        : `<div class="event-no-thumb"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></div>`
+    }
+    <div class="event-info">
+      <div class="event-sensor ${sensor}">${sensor.toUpperCase()} <span class="type-pill ${snapType}">${snapType}</span></div>
+      <div class="event-coords">📍 ${coords}</div>
+      ${event.distance_cm ? `<div class="event-coords" style="color:var(--yellow)">📡 ${event.distance_cm} cm</div>` : ""}
+    </div>
+    <div class="event-time">${timeAgo(event.created_at)}</div>`;
+  div.addEventListener("click", () => openLightbox(event));
+  return div;
+}
+
+// ============================================================
+// DEVICE CARDS
+// ============================================================
+function renderDeviceCards() {
+  const container = el("device-cards");
+  if (!container) return;
+  if (state.devices.length === 0) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">📡</div><p class="empty-text">No devices registered</p></div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  state.devices.forEach((d) => frag.appendChild(createDeviceCard(d)));
+  container.innerHTML = "";
+  container.appendChild(frag);
+}
+
+function createDeviceCard(device) {
+  const div = document.createElement("div");
+  div.className = "device-card";
+  div.dataset.deviceId = device.device_id;
+  const status = device.status || "offline";
+  const lastSeen = device.last_seen ? timeAgo(device.last_seen) : "never";
+  const isCam = device.device_type?.includes("cam");
+  div.innerHTML = `
+    <div class="device-icon">
+      ${
+        isCam
+          ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.9L15 14M4 8h11a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4a2 2 0 012-2z"/></svg>`
+          : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`
+      }
+    </div>
+    <div class="device-info">
+      <div class="device-name">${device.name || device.device_id}</div>
+      <div class="device-meta">${device.ip_address || "—"} · ${lastSeen}</div>
+    </div>
+    <div class="device-status-pill ${status}">${status}</div>`;
+  return div;
+}
+
+// ============================================================
+// LOG FEEDS
+// ============================================================
+function renderLogFeed() {
+  const feed = el("log-feed");
+  if (!feed) return;
+  const frag = document.createDocumentFragment();
+  state.logs.slice(0, 25).forEach((l) => frag.appendChild(createLogItem(l)));
+  feed.innerHTML = "";
+  feed.appendChild(frag);
+}
+
+function renderLogsFull() {
+  const feed = el("log-full");
+  if (!feed) return;
+  if (state.logs.length === 0) {
+    feed.innerHTML = `<div class="empty-state"><p class="empty-text">No logs yet</p></div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  state.logs.forEach((l) => frag.appendChild(createLogItem(l)));
+  feed.innerHTML = "";
+  feed.appendChild(frag);
+}
+
+function prependLogToFeed(log) {
+  ["log-feed", "log-full"].forEach((id) => {
+    const feed = el(id);
+    if (!feed) return;
+    feed.insertBefore(createLogItem(log), feed.firstChild);
+    while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+  });
+}
+
+function createLogItem(log) {
+  const div = document.createElement("div");
+  div.className = "log-item";
+  div.innerHTML = `
+    <span class="log-level ${log.level || "info"}">${log.level || "info"}</span>
+    <span class="log-text"><span class="log-category">[${log.category || "sys"}]</span> ${log.message}</span>
+    <span class="log-time">${formatDateTime(log.created_at)}</span>`;
+  return div;
+}
+
+// ============================================================
+// GALLERY
+// ============================================================
+function setupGalleryFilters() {
+  $$(".filter-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      $$(".filter-chip").forEach((c) => c.classList.remove("active"));
+      chip.classList.add("active");
+      state.galleryFilter = chip.dataset.filter;
+      renderGallery();
+    });
+  });
+}
+
+function renderGallery() {
+  const grid = el("gallery-grid");
+  if (!grid) return;
+  let filtered = state.events.filter((e) => e.snapshot_url);
+  if (state.galleryFilter !== "all")
+    filtered = filtered.filter((e) => e.snapshot_type === state.galleryFilter);
+  if (filtered.length === 0) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:80px 24px"><p class="empty-text">No snapshots for this filter</p></div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  filtered.forEach((event) => {
+    const card = document.createElement("div");
+    card.className = "gallery-card";
+    const snapType = event.snapshot_type || "motion";
+    card.innerHTML = `
+      <img class="gallery-img" src="${event.snapshot_url}" alt="snapshot" loading="lazy">
+      <div class="gallery-meta">
+        <div class="gallery-sensor">${(event.triggered_by || "—").toUpperCase()} · ${snapType.toUpperCase()}</div>
+        <div class="gallery-time">${formatDateTime(event.created_at)}</div>
+        <div class="gallery-coords">${event.latitude?.toFixed(5) || "—"}, ${event.longitude?.toFixed(5) || "—"}</div>
+      </div>`;
+    card.addEventListener("click", () => openLightbox(event));
+    frag.appendChild(card);
+  });
+  grid.innerHTML = "";
+  grid.appendChild(frag);
+}
+
+// ============================================================
+// DEVICES FULL VIEW
+// ============================================================
+function renderDevicesFull() {
+  const container = el("devices-full");
+  if (!container) return;
+  if (state.devices.length === 0) {
+    container.innerHTML = `<div class="empty-state" style="padding:80px"><p class="empty-text">No devices registered</p></div>`;
+    return;
+  }
+  container.innerHTML = "";
+  state.devices.forEach((device) => {
+    const card = document.createElement("div");
+    card.className = "panel";
+    card.style.marginBottom = "12px";
+    const status = device.status || "offline";
+    const lastSeen = device.last_seen
+      ? formatDateTime(device.last_seen)
+      : "Never";
+    const evCount = state.events.filter(
+      (e) => e.device_id === device.device_id,
+    ).length;
+    const hb = state.deviceStats[device.device_id];
+    card.innerHTML = `
+      <div class="panel-header">
+        <span class="panel-title">${device.name || device.device_id}</span>
+        <div class="device-status-pill ${status}">${status}</div>
+      </div>
+      <div style="padding:16px 18px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:16px">
+        ${[
+          ["Device ID", device.device_id],
+          ["Type", device.device_type || "—"],
+          ["IP Address", device.ip_address || "—"],
+          ["Firmware", device.firmware_version || "—"],
+          ["Last Seen", lastSeen],
+          ["Events", evCount],
+          ["RSSI", hb?.rssi ? `${hb.rssi} dBm` : "—"],
+          [
+            "Heap",
+            hb?.free_heap ? `${Math.round(hb.free_heap / 1024)} KB` : "—",
+          ],
+        ]
+          .map(
+            ([k, v]) =>
+              `<div><div class="stat-label">${k}</div><div style="font-family:var(--font-data);font-size:12px;color:var(--white);margin-top:4px">${v}</div></div>`,
+          )
+          .join("")}
+      </div>`;
+    container.appendChild(card);
+  });
+}
+
+// ============================================================
+// MAP
+// ============================================================
+function initMap() {
+  const mapEl = document.getElementById("map");
+  if (!mapEl || typeof L === "undefined") return;
+  state.map = L.map("map", { center: [0, 0], zoom: 2 });
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+  }).addTo(state.map);
+  renderMapMarkers();
+}
+
+function initFullMap() {
+  if (state.fullMap) return;
+  const mapEl = document.getElementById("map-full");
+  if (!mapEl || typeof L === "undefined") return;
+  state.fullMap = L.map("map-full", { center: [0, 0], zoom: 2 });
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+  }).addTo(state.fullMap);
+  renderFullMapMarkers();
+}
+
+const colorMap = {
+  motion: "#ff2020",
+  periodic: "#888",
+  manual: "#4a90d9",
+  startup: "#555",
+};
+
+function renderMapMarkers() {
+  if (!state.map) return;
+  state.markers.forEach((m) => state.map.removeLayer(m));
+  state.markers = [];
+  const gpsEvents = state.events.filter(
+    (e) => e.latitude && e.longitude && Math.abs(e.latitude) > 0.001,
+  );
+  if (!gpsEvents.length) return;
+  gpsEvents.forEach((event) => addMarkerToMap(event, state.map, state.markers));
+  const bounds = gpsEvents.map((e) => [e.latitude, e.longitude]);
+  if (bounds.length)
+    state.map.fitBounds(bounds, { padding: [20, 20], maxZoom: 15 });
+}
+
+function renderFullMapMarkers() {
+  if (!state.fullMap) return;
+  state.fullMarkers.forEach((m) => state.fullMap.removeLayer(m));
+  state.fullMarkers = [];
+  const gpsEvents = state.events.filter(
+    (e) => e.latitude && e.longitude && Math.abs(e.latitude) > 0.001,
+  );
+  gpsEvents.forEach((event) =>
+    addMarkerToMap(event, state.fullMap, state.fullMarkers),
+  );
+  if (gpsEvents.length) {
+    const bounds = gpsEvents.map((e) => [e.latitude, e.longitude]);
+    state.fullMap.fitBounds(bounds, { padding: [20, 20], maxZoom: 15 });
+  }
+}
+
+function addMarkerToMap(event, map, markersArr) {
+  const color = colorMap[event.snapshot_type] || "#cc0000";
+  const icon = L.divIcon({
+    className: "",
+    html: `<div style="width:10px;height:10px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 0 8px ${color}"></div>`,
+    iconSize: [10, 10],
+    iconAnchor: [5, 5],
+  });
+  const marker = L.marker([event.latitude, event.longitude], { icon }).addTo(
+    map,
+  ).bindPopup(`<div style="font-family:monospace;font-size:11px">
+      <strong>${(event.triggered_by || "—").toUpperCase()} [${event.snapshot_type}]</strong><br>
+      ${formatDateTime(event.created_at)}<br>
+      ${event.latitude.toFixed(5)}, ${event.longitude.toFixed(5)}
+      ${event.snapshot_url ? `<br><img src="${event.snapshot_url}" style="width:120px;margin-top:6px;border-radius:2px">` : ""}
+    </div>`);
+  markersArr.push(marker);
+}
+
+function addSingleMarker(event) {
+  if (!event.latitude || !event.longitude || Math.abs(event.latitude) < 0.001)
+    return;
+  if (state.map) addMarkerToMap(event, state.map, state.markers);
+  if (state.fullMap) addMarkerToMap(event, state.fullMap, state.fullMarkers);
+}
+
+// ============================================================
+// LIGHTBOX
+// ============================================================
+function openLightbox(event) {
+  const lb = el("lightbox");
+  if (!lb) return;
+  el("lb-img").src = event.snapshot_url || "";
+  el("lb-img").style.display = event.snapshot_url ? "block" : "none";
+  el("lb-sensor").textContent = event.triggered_by?.toUpperCase() || "—";
+  el("lb-type").textContent = event.snapshot_type || "—";
+  el("lb-datetime").textContent = formatDateTime(event.created_at);
+  el("lb-lat").textContent = event.latitude?.toFixed(6) || "—";
+  el("lb-lng").textContent = event.longitude?.toFixed(6) || "—";
+  el("lb-dist").textContent = event.distance_cm
+    ? `${event.distance_cm} cm`
+    : "—";
+  el("lb-sms").textContent = event.sms_sent ? "✓ Sent" : "—";
+  el("lb-device").textContent = event.device_id || "—";
+  const mapsUrl = event.latitude
+    ? `https://maps.google.com/?q=${event.latitude},${event.longitude}`
+    : null;
+  const btn = el("lb-maps-btn");
+  if (btn) {
+    btn.style.display = mapsUrl ? "inline-flex" : "none";
+    btn.href = mapsUrl || "#";
+  }
+  lb.classList.add("open");
+}
+
+function setupLightbox() {
+  const lb = el("lightbox");
+  if (!lb) return;
+  el("lb-close")?.addEventListener("click", () => lb.classList.remove("open"));
+  lb.addEventListener("click", (e) => {
+    if (e.target === lb) lb.classList.remove("open");
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") lb.classList.remove("open");
+  });
+}
+
+// ============================================================
+// REALTIME — filtered, append-only
+// ============================================================
+function setupRealtime() {
+  // New events — filtered to this device
+  db.channel("events-rt")
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "events",
+        filter: `device_id=eq.${CAM_DEVICE_ID}`,
+      },
+      (payload) => {
+        const event = payload.new;
+        state.events.unshift(event);
+
+        if (event.snapshot_url)
+          updateCameraImage(event.snapshot_url, event.created_at, event);
+
+        // Command completed — unlock snapshot button
+        if (event.snapshot_type === "manual" && snapshotPending) {
+          snapshotPending = false;
+          unlockSnapshotButtons();
+          el("live-loading")?.classList.remove("visible");
+          showToast(
+            "success",
+            "Snapshot Ready",
+            "Image captured via WebSocket push",
+            3000,
+          );
+        }
+
+        if (event.snapshot_type === "motion") {
+          state.unreadAlerts++;
+          showMotionToast(event);
+        }
+
+        if (event.latitude && Math.abs(event.latitude) > 0.001) {
+          updateGPSState(event);
+          renderGPSBar();
+        }
+
+        prependEventToFeed(event);
+        addSingleMarker(event);
+        renderStats();
+        updateTopbarPills();
+        if (state.currentView === "gallery") renderGallery();
+      },
+    )
+    .subscribe();
+
+  // Device status changes
+  db.channel("devices-rt")
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "devices" },
+      (payload) => {
+        const device = payload.new;
+        const idx = state.devices.findIndex(
+          (d) => d.device_id === device.device_id,
+        );
+        if (idx >= 0) state.devices[idx] = device;
+        else state.devices.unshift(device);
+        renderDeviceCards();
+        updateTopbarPills();
+        updateTopbarStatus();
+        if (state.currentView === "devices") renderDevicesFull();
+      },
+    )
+    .subscribe();
+
+  // New logs
+  db.channel("logs-rt")
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "logs" },
+      (payload) => {
+        state.logs.unshift(payload.new);
+        prependLogToFeed(payload.new);
+      },
+    )
+    .subscribe();
+
+  // Heartbeats — update GPS satellite count
+  db.channel("heartbeats-rt")
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "heartbeats" },
+      (payload) => {
+        const hb = payload.new;
+        state.deviceStats[hb.device_id] = hb;
+        if (hb.hub_gps_sats !== undefined) {
+          state.gpsState.satellites = hb.hub_gps_sats;
+          renderGPSBar();
+        }
+        updateTopbarPills();
+      },
+    )
+    .subscribe();
+
+  updateRealtimeIndicator(true);
+}
+
+function updateRealtimeIndicator(connected) {
+  const e = el("realtime-indicator");
+  if (!e) return;
+  e.className = `conn-indicator ${connected ? "" : "disconnected"}`;
+  const dot = e.querySelector(".pill-dot") || e.querySelector(".status-dot");
+  const span = e.querySelector("span:last-child");
+  if (dot)
+    dot.className = `${dot.className.replace(/ (green|red|grey)/g, "")} ${connected ? "green" : "red"}`;
+  if (span) span.textContent = connected ? "Cloud" : "Offline";
+}
+
+// ============================================================
+// TOASTS
+// ============================================================
+function showMotionToast(event) {
+  const container = el("alert-banner");
+  if (!container) return;
+  const toast = document.createElement("div");
+  toast.className = "alert-toast";
+  const coords =
+    event.latitude && Math.abs(event.latitude) > 0.001
+      ? `${event.latitude.toFixed(4)}, ${event.longitude.toFixed(4)}`
+      : "No GPS";
+  toast.innerHTML = `
+    <div class="toast-title">⚠ Motion Detected</div>
+    <div class="toast-body">Sensor: ${event.triggered_by?.toUpperCase() || "—"}<br>${coords}</div>`;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 6000);
+}
+
+function showToast(type, title, body, duration = 4000) {
+  const container = el("alert-banner");
+  if (!container) return;
+  const toast = document.createElement("div");
+  toast.className = "alert-toast";
+  const colors = {
+    error: "var(--red-bright)",
+    success: "var(--green)",
+    info: "var(--blue)",
+    warn: "var(--yellow)",
+  };
+  const color = colors[type] || "var(--white-dim)";
+  toast.style.borderColor = color;
+  toast.style.borderLeftColor = color;
+  toast.innerHTML = `<div class="toast-title" style="color:${color}">${title}</div><div class="toast-body">${body}</div>`;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), duration);
+}
+
+// ============================================================
+// LOG EXPORT
+// ============================================================
+function setupLogExport() {
+  el("btn-export-logs")?.addEventListener("click", () => {
+    const lines = state.logs
+      .map(
+        (l) =>
+          `${formatDateTime(l.created_at)}\t[${(l.level || "").toUpperCase()}]\t[${l.category || "sys"}]\t${l.message}`,
+      )
+      .join("\n");
+    const blob = new Blob([lines], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `sentinel_logs_${new Date().toISOString().split("T")[0]}.txt`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+async function init() {
+  startClock();
+  setupNav();
+  setupLightbox();
+  setupGalleryFilters();
+  setupLogExport();
+  await loadInitialData();
+  setupRealtime();
+  initMap();
+  setupSnapshotButton();
+
+  // Server health check — once at boot and every 30s
+  checkServerHealth();
+  setInterval(checkServerHealth, 30_000);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  init().then(() => {
+    window._appState = state;
+  });
+});

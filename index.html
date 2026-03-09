@@ -1,0 +1,974 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SENTRY — Surveillance Dashboard</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  </head>
+  <body>
+    <div class="app">
+      <!-- ====================================================
+           TOPBAR
+           ==================================================== -->
+      <header class="topbar">
+        <div class="topbar-brand">
+          <div class="brand-mark">
+            <svg
+              viewBox="0 0 28 28"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M14 2L3 7v8c0 6.08 4.74 11.76 11 13 6.26-1.24 11-6.92 11-13V7L14 2z"
+                stroke="#ff2828"
+                stroke-width="1.8"
+              />
+              <path
+                d="M10 14l3 3 5-5"
+                stroke="#ff2828"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </div>
+          <div class="brand-name">SENTI<span>NEL</span></div>
+        </div>
+
+        <!-- Component Status Pills -->
+        <div class="topbar-status" id="topbar-status-row">
+          <!-- Camera -->
+          <div class="status-pill offline" id="pill-camera" title="Camera Unit">
+            <div class="pill-dot grey" id="pill-camera-dot"></div>
+            <span>📷 Camera</span>
+            <span id="pill-camera-text" style="opacity: 0.55; font-size: 10px"
+              >—</span
+            >
+          </div>
+
+          <!-- WiFi -->
+          <div
+            class="status-pill offline"
+            id="pill-wifi"
+            title="WiFi Connection"
+          >
+            <div class="pill-dot grey" id="pill-wifi-dot"></div>
+            <span>📶 WiFi</span>
+            <span id="pill-wifi-text" style="opacity: 0.55; font-size: 10px"
+              >—</span
+            >
+          </div>
+
+          <!-- GPS -->
+          <div class="status-pill offline" id="pill-gps" title="GPS Module">
+            <div class="pill-dot grey" id="pill-gps-dot"></div>
+            <span class="gps-pill-label">🛰 GPS</span>
+            <span id="pill-gps-text" class="gps-pill-sats">No Fix</span>
+          </div>
+
+          <!-- ESP-NOW -->
+          <div
+            class="status-pill offline"
+            id="pill-espnow"
+            title="ESP-NOW Sensor Link"
+          >
+            <div class="pill-dot grey" id="pill-espnow-dot"></div>
+            <span>📡 Sensor</span>
+            <span id="pill-espnow-text" style="opacity: 0.55; font-size: 10px"
+              >—</span
+            >
+          </div>
+
+          <!-- GSM -->
+          <div
+            class="status-pill offline"
+            id="pill-gsm"
+            title="GSM / SMS Module"
+          >
+            <div class="pill-dot grey" id="pill-gsm-dot"></div>
+            <span>💬 GSM</span>
+            <span id="pill-gsm-text" style="opacity: 0.55; font-size: 10px"
+              >—</span
+            >
+          </div>
+
+          <!-- Realtime -->
+          <div
+            class="conn-indicator"
+            id="realtime-indicator"
+            title="Supabase Realtime"
+          >
+            <div class="pill-dot grey"></div>
+            <span style="font-family: var(--font-data); font-size: 11px"
+              >Cloud</span
+            >
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <button id="theme-toggle">
+            <span class="toggle-icon">☀️</span>
+            <span id="theme-label">Light</span>
+          </button>
+          <div class="topbar-time" id="clock">00:00:00</div>
+        </div>
+      </header>
+
+      <!-- Connection error banner -->
+      <div class="conn-banner" id="conn-banner">
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path
+            d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+          />
+        </svg>
+        <span id="conn-banner-msg"
+          >Connection lost. Attempting to reconnect...</span
+        >
+        <button class="conn-banner-action" onclick="location.reload()">
+          Reload
+        </button>
+      </div>
+
+      <!-- ====================================================
+           SIDEBAR
+           ==================================================== -->
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-label">Monitor</div>
+
+          <a class="nav-item active" data-view="dashboard">
+            <svg
+              class="nav-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+            >
+              <rect x="2" y="3" width="9" height="9" rx="1" />
+              <rect x="13" y="3" width="9" height="9" rx="1" />
+              <rect x="2" y="14" width="9" height="7" rx="1" />
+              <rect x="13" y="14" width="9" height="7" rx="1" />
+            </svg>
+            Dashboard
+          </a>
+
+          <a class="nav-item" data-view="live">
+            <svg
+              class="nav-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+            >
+              <path
+                d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.9L15 14M4 8h11a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4a2 2 0 012-2z"
+              />
+            </svg>
+            Live Camera
+          </a>
+
+          <a class="nav-item" data-view="gallery">
+            <svg
+              class="nav-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <path d="M21 15l-5-5L5 21" />
+            </svg>
+            Snapshots
+          </a>
+
+          <a class="nav-item" data-view="map">
+            <svg
+              class="nav-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+            >
+              <path
+                d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"
+              />
+            </svg>
+            GPS Map
+          </a>
+        </div>
+
+        <div class="sidebar-divider"></div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-label">System</div>
+
+          <a class="nav-item" data-view="devices">
+            <svg
+              class="nav-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+            >
+              <rect x="2" y="4" width="20" height="16" rx="2" />
+              <path d="M8 20h8M12 16v4" />
+            </svg>
+            Devices
+          </a>
+
+          <a class="nav-item" data-view="logs">
+            <svg
+              class="nav-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+            >
+              <path
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+              />
+              <path d="M9 12h6M9 16h4" />
+            </svg>
+            Activity Log
+            <span class="nav-badge" id="log-badge" style="display: none"
+              >0</span
+            >
+          </a>
+        </div>
+
+        <div class="sidebar-bottom">
+          <div class="sidebar-version" id="sidebar-version">
+            SENTINEL v4.0 · ESP32-CAM-01
+          </div>
+        </div>
+      </aside>
+
+      <!-- ====================================================
+           MAIN
+           ==================================================== -->
+      <main class="main">
+        <!-- ============ DASHBOARD VIEW ============ -->
+        <section id="view-dashboard" class="view active">
+          <div class="view-header">
+            <div class="view-title-group">
+              <h1 class="view-title">Overview</h1>
+              <p class="view-subtitle">
+                Real-time surveillance · Live cloud sync
+              </p>
+            </div>
+            <div class="view-actions">
+              <button class="btn btn-sm" id="btn-snapshot">
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path
+                    d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+                  />
+                </svg>
+                Snapshot
+              </button>
+            </div>
+          </div>
+
+          <div class="view-content">
+            <!-- GPS Status Bar -->
+            <div class="gps-status-bar" id="gps-status-bar">
+              <div class="gps-main">
+                <div class="gps-icon-wrap fix-none" id="gps-icon-wrap">🛰</div>
+                <div class="gps-text">
+                  <div class="gps-fix-label fix-none" id="gps-fix-label">
+                    No GPS Fix
+                  </div>
+                  <div class="gps-fix-sub" id="gps-fix-sub">
+                    Waiting for satellite data...
+                  </div>
+                </div>
+              </div>
+              <div class="gps-divider"></div>
+              <div class="gps-stat">
+                <div class="gps-stat-label">Satellites</div>
+                <div class="gps-stat-value" id="gps-sats">0</div>
+                <div class="gps-sats-display" id="gps-sats-display">
+                  <div class="gps-sat-bar" style="height: 5px"></div>
+                  <div class="gps-sat-bar" style="height: 8px"></div>
+                  <div class="gps-sat-bar" style="height: 11px"></div>
+                  <div class="gps-sat-bar" style="height: 15px"></div>
+                  <div class="gps-sat-bar" style="height: 20px"></div>
+                  <div class="gps-sat-bar" style="height: 15px"></div>
+                  <div class="gps-sat-bar" style="height: 11px"></div>
+                  <div class="gps-sat-bar" style="height: 8px"></div>
+                </div>
+              </div>
+              <div class="gps-divider"></div>
+              <div class="gps-stat">
+                <div class="gps-stat-label">Coordinates</div>
+                <div
+                  class="gps-stat-value"
+                  id="gps-coords"
+                  style="font-size: 12px"
+                >
+                  —
+                </div>
+              </div>
+              <div class="gps-divider"></div>
+              <div class="gps-stat">
+                <div class="gps-stat-label">Last Fix</div>
+                <div
+                  class="gps-stat-value"
+                  id="gps-last-fix"
+                  style="font-size: 12px"
+                >
+                  —
+                </div>
+              </div>
+              <div class="gps-divider"></div>
+              <div class="gps-stat">
+                <div class="gps-stat-label">Distance (last)</div>
+                <div class="gps-stat-value" id="gps-last-distance">—</div>
+              </div>
+            </div>
+
+            <!-- Stats Row -->
+            <div class="stats-row">
+              <div class="stat-card">
+                <div class="stat-label">Total Events</div>
+                <div class="stat-value" id="stat-total">—</div>
+                <div class="stat-sub">All time captures</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Motion Today</div>
+                <div class="stat-value alert" id="stat-today">—</div>
+                <div class="stat-sub">PIR triggers today</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Devices Online</div>
+                <div class="stat-value good" id="stat-devices">—</div>
+                <div class="stat-sub">Hardware nodes</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Last Location</div>
+                <div
+                  class="stat-value"
+                  style="font-size: 20px; letter-spacing: 0"
+                  id="stat-last-coords"
+                >
+                  —
+                </div>
+                <div class="stat-sub">GPS coordinates</div>
+              </div>
+            </div>
+
+            <!-- Dashboard Grid -->
+            <div class="dashboard-grid">
+              <div class="dashboard-left">
+                <!-- Live Feed Preview -->
+                <div class="panel live-panel">
+                  <div class="panel-header">
+                    <span class="panel-title">Camera Feed</span>
+                    <div class="panel-actions">
+                      <button
+                        class="btn btn-sm"
+                        id="btn-snapshot-2"
+                        title="Take snapshot now"
+                      >
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="12" cy="12" r="3" />
+                          <path
+                            d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+                          />
+                        </svg>
+                        Snapshot
+                      </button>
+                    </div>
+                  </div>
+                  <div class="live-feed-wrap">
+                    <div class="live-badge" id="live-badge">Live</div>
+                    <img
+                      id="live-img"
+                      class="live-img"
+                      src=""
+                      alt="camera feed"
+                      style="display: none"
+                    />
+                    <div class="live-loading" id="live-loading">
+                      <div class="live-spinner"></div>
+                    </div>
+                  </div>
+                  <div class="live-footer">
+                    <span class="live-timestamp" id="live-timestamp">—</span>
+                    <a class="panel-badge" data-view="live">Full View ↗</a>
+                  </div>
+                </div>
+
+                <!-- Event Feed -->
+                <div class="panel">
+                  <div class="panel-header">
+                    <span class="panel-title">Event Feed</span>
+                    <span class="badge badge-green" id="realtime-badge"
+                      >● Realtime</span
+                    >
+                  </div>
+                  <div class="event-feed" id="event-feed">
+                    <div
+                      class="skeleton"
+                      style="
+                        height: 80px;
+                        margin: 14px 20px;
+                        border-radius: 6px;
+                      "
+                    ></div>
+                    <div
+                      class="skeleton"
+                      style="
+                        height: 80px;
+                        margin: 14px 20px;
+                        border-radius: 6px;
+                      "
+                    ></div>
+                    <div
+                      class="skeleton"
+                      style="
+                        height: 80px;
+                        margin: 14px 20px;
+                        border-radius: 6px;
+                      "
+                    ></div>
+                  </div>
+                </div>
+              </div>
+              <!-- /dashboard-left -->
+
+              <div class="dashboard-right">
+                <!-- GPS Map Preview -->
+                <div class="panel">
+                  <div class="panel-header">
+                    <span class="panel-title">Event Locations</span>
+                    <a class="panel-badge" data-view="map">Expand ↗</a>
+                  </div>
+                  <div style="position: relative">
+                    <div id="map"></div>
+                  </div>
+                </div>
+
+                <!-- Devices -->
+                <div class="panel">
+                  <div class="panel-header">
+                    <span class="panel-title">Hardware Nodes</span>
+                    <a class="panel-badge" data-view="devices">Details ↗</a>
+                  </div>
+                  <div id="device-cards">
+                    <div
+                      class="skeleton"
+                      style="
+                        height: 68px;
+                        margin: 14px 20px;
+                        border-radius: 6px;
+                      "
+                    ></div>
+                    <div
+                      class="skeleton"
+                      style="
+                        height: 68px;
+                        margin: 14px 20px;
+                        border-radius: 6px;
+                      "
+                    ></div>
+                  </div>
+                </div>
+
+                <!-- Mini Log -->
+                <div class="panel">
+                  <div class="panel-header">
+                    <span class="panel-title">System Log</span>
+                    <a class="panel-badge" data-view="logs">View All ↗</a>
+                  </div>
+                  <div class="log-feed" id="log-feed">
+                    <div
+                      class="skeleton"
+                      style="
+                        height: 34px;
+                        margin: 10px 20px;
+                        border-radius: 6px;
+                      "
+                    ></div>
+                    <div
+                      class="skeleton"
+                      style="
+                        height: 34px;
+                        margin: 10px 20px;
+                        border-radius: 6px;
+                      "
+                    ></div>
+                    <div
+                      class="skeleton"
+                      style="
+                        height: 34px;
+                        margin: 10px 20px;
+                        border-radius: 6px;
+                      "
+                    ></div>
+                  </div>
+                </div>
+              </div>
+              <!-- /dashboard-right -->
+            </div>
+            <!-- /dashboard-grid -->
+          </div>
+          <!-- /view-content -->
+        </section>
+
+        <!-- ============ LIVE CAMERA VIEW ============ -->
+        <section id="view-live" class="view">
+          <div class="view-header">
+            <div class="view-title-group">
+              <h1 class="view-title">Live Camera</h1>
+              <p class="view-subtitle">
+                Remote view · Manual trigger · Live stream mode
+              </p>
+            </div>
+            <div class="view-actions">
+              <button class="btn" id="btn-live-snap">
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path
+                    d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+                  />
+                </svg>
+                Snapshot Now
+              </button>
+            </div>
+          </div>
+
+          <div
+            style="
+              display: grid;
+              grid-template-columns: 1fr 320px;
+              gap: 18px;
+              padding: 24px 36px;
+              flex: 1;
+            "
+          >
+            <!-- Full-size live image -->
+            <div class="panel live-panel" style="overflow: hidden">
+              <div
+                class="live-feed-wrap"
+                style="height: 100%; min-height: 420px"
+              >
+                <div class="live-badge" id="live-badge-full">Live</div>
+                <img
+                  id="live-img-full"
+                  class="live-img"
+                  src=""
+                  alt="camera feed"
+                  style="display: none; height: 100%; aspect-ratio: unset"
+                />
+                <div class="live-loading" id="live-loading-full">
+                  <div class="live-spinner"></div>
+                </div>
+                <div class="live-overlay" id="live-overlay-full">
+                  <svg
+                    class="live-placeholder-icon"
+                    width="64"
+                    height="64"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="white"
+                    stroke-width="1"
+                  >
+                    <path
+                      d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.9L15 14M4 8h11a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4a2 2 0 012-2z"
+                    />
+                  </svg>
+                  <span class="live-placeholder-text"
+                    >Awaiting camera feed...</span
+                  >
+                </div>
+              </div>
+            </div>
+
+            <!-- Side info panel -->
+            <div style="display: flex; flex-direction: column; gap: 14px">
+              <div class="panel">
+                <div class="panel-header">
+                  <span class="panel-title">Camera Controls</span>
+                </div>
+                <div
+                  style="
+                    padding: 18px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                  "
+                >
+                  <button
+                    class="btn btn-lg"
+                    style="justify-content: center; width: 100%"
+                    id="btn-live-snap2"
+                  >
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <circle cx="12" cy="12" r="3" />
+                      <path
+                        d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+                      />
+                    </svg>
+                    Take Snapshot
+                  </button>
+
+                  <div
+                    style="
+                      font-family: var(--font-data);
+                      font-size: 11px;
+                      color: var(--white-45);
+                      line-height: 1.7;
+                      border-top: 1px solid var(--border);
+                      padding-top: 12px;
+                    "
+                  >
+                    <div>
+                      Periodic: auto every
+                      <strong style="color: var(--white-70)">5 min</strong>
+                    </div>
+                    <div>Commands via Supabase queue</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-header">
+                  <span class="panel-title">Last Capture</span>
+                </div>
+                <div
+                  style="
+                    padding: 16px 20px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 8px;
+                  "
+                >
+                  <div class="info-row">
+                    <span class="info-row-key">Time</span>
+                    <span class="info-row-val" id="live-timestamp-full">—</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-row-key">Type</span>
+                    <span class="info-row-val" id="live-type-full">—</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-row-key">GPS</span>
+                    <span class="info-row-val" id="live-gps-full">—</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-row-key">Device</span>
+                    <span
+                      class="info-row-val"
+                      style="font-family: var(--font-data); font-size: 11px"
+                      >ESP32-CAM-01</span
+                    >
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-header">
+                  <span class="panel-title">Recent Captures</span>
+                </div>
+                <div
+                  id="live-recent"
+                  style="max-height: 280px; overflow-y: auto"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ GALLERY VIEW ============ -->
+        <section id="view-gallery" class="view">
+          <div class="view-header">
+            <div class="view-title-group">
+              <h1 class="view-title">Snapshots</h1>
+              <p class="view-subtitle">
+                All captured frames · Click to inspect
+              </p>
+            </div>
+          </div>
+          <div class="gallery-filters">
+            <button class="filter-chip active" data-filter="all">All</button>
+            <button class="filter-chip" data-filter="motion">Motion</button>
+            <button class="filter-chip" data-filter="periodic">Periodic</button>
+            <button class="filter-chip" data-filter="manual">Manual</button>
+          </div>
+          <div id="gallery-grid" class="gallery-grid"></div>
+        </section>
+
+        <!-- ============ MAP VIEW ============ -->
+        <section id="view-map" class="view">
+          <div class="view-header">
+            <div class="view-title-group">
+              <h1 class="view-title">GPS Map</h1>
+              <p class="view-subtitle">
+                All event locations · Color-coded by trigger type
+              </p>
+            </div>
+            <div
+              class="view-actions"
+              style="
+                font-family: var(--font-data);
+                font-size: 11px;
+                color: var(--white-45);
+                display: flex;
+                gap: 16px;
+                align-items: center;
+              "
+            >
+              <span style="color: var(--red-hi)">● Motion</span>
+              <span style="color: var(--blue-hi)">● Manual</span>
+              <span style="color: var(--green)">● Live</span>
+              <span style="color: var(--white-45)">● Periodic</span>
+            </div>
+          </div>
+          <div style="flex: 1; position: relative">
+            <div
+              id="map-full"
+              style="
+                height: 100%;
+                min-height: 520px;
+                background: var(--surface-3);
+              "
+            ></div>
+          </div>
+        </section>
+
+        <!-- ============ DEVICES VIEW ============ -->
+        <section id="view-devices" class="view">
+          <div class="view-header">
+            <div class="view-title-group">
+              <h1 class="view-title">Devices</h1>
+              <p class="view-subtitle">
+                Hardware configuration · Status · Settings
+              </p>
+            </div>
+            <div class="view-actions">
+              <button class="btn btn-sm" id="btn-refresh-devices">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" />
+                </svg>
+                Refresh
+              </button>
+            </div>
+          </div>
+          <div class="devices-page" id="devices-full">
+            <div
+              class="skeleton"
+              style="height: 400px; border-radius: 10px"
+            ></div>
+          </div>
+        </section>
+
+        <!-- ============ LOGS VIEW ============ -->
+        <section id="view-logs" class="view">
+          <div class="view-header">
+            <div class="view-title-group">
+              <h1 class="view-title">Activity Log</h1>
+              <p class="view-subtitle">
+                Full system event and diagnostic log · Real-time
+              </p>
+            </div>
+            <div class="view-actions">
+              <button class="btn btn-sm" id="btn-export-logs">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Export
+              </button>
+              <button
+                class="btn btn-sm btn-red"
+                onclick="document.getElementById('log-full').innerHTML = ''"
+              >
+                Clear View
+              </button>
+            </div>
+          </div>
+          <div class="view-content">
+            <div class="panel">
+              <div
+                id="log-full"
+                class="log-feed"
+                style="max-height: none"
+              ></div>
+            </div>
+          </div>
+        </section>
+      </main>
+      <!-- /main -->
+    </div>
+    <!-- /app -->
+
+    <!-- ====================================================
+         LIGHTBOX
+         ==================================================== -->
+    <div class="lightbox" id="lightbox">
+      <div class="lightbox-inner">
+        <div class="lightbox-img-wrap">
+          <img id="lb-img" class="lightbox-img" src="" alt="snapshot" />
+          <button class="lightbox-close" id="lb-close">✕</button>
+        </div>
+        <div class="lightbox-info">
+          <div class="info-section">
+            <div class="info-label">Trigger / Type</div>
+            <div class="info-value alert" id="lb-sensor">—</div>
+            <div
+              class="info-value"
+              style="font-size: 12px; margin-top: 4px; opacity: 0.6"
+              id="lb-type"
+            >
+              —
+            </div>
+          </div>
+          <div class="info-section">
+            <div class="info-label">Timestamp</div>
+            <div class="info-value" id="lb-datetime">—</div>
+          </div>
+          <div class="info-section">
+            <div class="info-label">GPS Location</div>
+            <div class="info-row">
+              <span class="info-row-key">Latitude</span
+              ><span class="info-row-val" id="lb-lat">—</span>
+            </div>
+            <div class="info-row">
+              <span class="info-row-key">Longitude</span
+              ><span class="info-row-val" id="lb-lng">—</span>
+            </div>
+            <div class="info-row">
+              <span class="info-row-key">Fix Status</span
+              ><span class="info-row-val" id="lb-gps-status">—</span>
+            </div>
+            <a
+              id="lb-maps-btn"
+              class="btn btn-sm btn-blue"
+              href="#"
+              target="_blank"
+              style="margin-top: 10px; display: none"
+            >
+              📍 Open in Maps
+            </a>
+          </div>
+          <div class="info-section">
+            <div class="info-label">Sensor Data</div>
+            <div class="info-row">
+              <span class="info-row-key">Distance</span
+              ><span class="info-row-val" id="lb-dist">—</span>
+            </div>
+            <div class="info-row">
+              <span class="info-row-key">SMS Sent</span
+              ><span class="info-row-val" id="lb-sms">—</span>
+            </div>
+            <div class="info-row">
+              <span class="info-row-key">Device ID</span
+              ><span class="info-row-val" id="lb-device">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast container -->
+    <div class="alert-banner" id="alert-banner"></div>
+
+    <!-- ====================================================
+         SCRIPTS
+         ==================================================== -->
+    <script>
+      // Mirror live image to full view
+      const mainImg = document.getElementById("live-img");
+      if (mainImg) {
+        new MutationObserver(() => {
+          const full = document.getElementById("live-img-full");
+          const fullOver = document.getElementById("live-overlay-full");
+          const fullTs = document.getElementById("live-timestamp-full");
+          if (full && mainImg.src && mainImg.src !== window.location.href) {
+            full.src = mainImg.src;
+            full.style.display = "block";
+            if (fullOver) fullOver.classList.add("hidden");
+            const ts = document.getElementById("live-timestamp");
+            if (fullTs && ts) fullTs.textContent = ts.textContent;
+          }
+        }).observe(mainImg, { attributes: true, attributeFilter: ["src"] });
+      }
+
+      // Sync live buttons
+      ["btn-live-full", "btn-live-full2"].forEach((id) => {
+        document.getElementById(id)?.addEventListener("click", () => {
+          document.getElementById("btn-live")?.click();
+        });
+      });
+
+      // Sync snapshot buttons
+      ["btn-snapshot-2", "btn-live-snap", "btn-live-snap2"].forEach((id) => {
+        document.getElementById(id)?.addEventListener("click", () => {
+          document.getElementById("btn-snapshot")?.click();
+        });
+      });
+    </script>
+    <script src="js/config.js"></script>
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
