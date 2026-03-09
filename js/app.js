@@ -243,9 +243,8 @@ function renderStats() {
       e.snapshot_type === "motion",
   ).length;
   const online = state.devices.filter((d) => d.status === "online").length;
-  const last = state.events[0];
-  const coords = last?.latitude
-    ? `${last.latitude.toFixed(4)}, ${last.longitude.toFixed(4)}`
+  const coords = state.gpsState.latitude
+    ? `${state.gpsState.latitude.toFixed(4)}, ${state.gpsState.longitude.toFixed(4)}`
     : "—";
 
   setVal("stat-total", state.totalEvents);
@@ -1073,6 +1072,7 @@ function setupRealtime() {
         if (idx >= 0) state.devices[idx] = device;
         else state.devices.unshift(device);
         renderDeviceCards();
+        renderStats(); // ← "Devices Online" stat card
         updateTopbarPills();
         updateTopbarStatus();
         if (state.currentView === "devices") renderDevicesFull();
@@ -1092,7 +1092,7 @@ function setupRealtime() {
     )
     .subscribe();
 
-  // Heartbeats — update GPS satellite count
+  // Heartbeats — update device status + GPS satellites
   db.channel("heartbeats-rt")
     .on(
       "postgres_changes",
@@ -1100,14 +1100,72 @@ function setupRealtime() {
       (payload) => {
         const hb = payload.new;
         state.deviceStats[hb.device_id] = hb;
+
+        // Directly update state.devices so UI responds without waiting
+        // for a separate devices-rt event (which depends on RLS).
+        const devIdx = state.devices.findIndex(
+          (d) => d.device_id === hb.device_id,
+        );
+        if (devIdx >= 0) {
+          state.devices[devIdx] = {
+            ...state.devices[devIdx],
+            status: "online",
+            last_seen: hb.created_at || new Date().toISOString(),
+            ip_address: hb.ip_address || state.devices[devIdx].ip_address,
+            firmware_version:
+              hb.firmware_version || state.devices[devIdx].firmware_version,
+          };
+        } else {
+          // First heartbeat from a new device — register it in local state
+          state.devices.unshift({
+            device_id: hb.device_id,
+            name: hb.device_id,
+            device_type: hb.device_id?.toLowerCase().includes("cam")
+              ? "esp32_cam"
+              : "sensor",
+            status: "online",
+            last_seen: hb.created_at || new Date().toISOString(),
+            ip_address: hb.ip_address || "—",
+            firmware_version: hb.firmware_version || "—",
+          });
+        }
+
         if (hb.hub_gps_sats !== undefined) {
           state.gpsState.satellites = hb.hub_gps_sats;
           renderGPSBar();
         }
+
+        renderDeviceCards();
+        renderStats(); // ← "Devices Online" stat card
         updateTopbarPills();
+        updateTopbarStatus();
+        if (state.currentView === "devices") renderDevicesFull();
       },
     )
     .subscribe();
+
+  // Age out stale devices every 60s.
+  // If last_seen is > 3 minutes ago and status is "online", flip to "offline".
+  setInterval(() => {
+    const STALE_MS = 3 * 60 * 1000; // 3 minutes = 2 missed heartbeats
+    let changed = false;
+    state.devices.forEach((d) => {
+      if (d.status === "online" && d.last_seen) {
+        const age = Date.now() - new Date(d.last_seen).getTime();
+        if (age > STALE_MS) {
+          d.status = "offline";
+          changed = true;
+        }
+      }
+    });
+    if (changed) {
+      renderDeviceCards();
+      renderStats();
+      updateTopbarPills();
+      updateTopbarStatus();
+      if (state.currentView === "devices") renderDevicesFull();
+    }
+  }, 60_000);
 
   updateRealtimeIndicator(true);
 }
@@ -1198,6 +1256,27 @@ async function init() {
   // Server health check — once at boot and every 30s
   checkServerHealth();
   setInterval(checkServerHealth, 30_000);
+
+  // Periodic device re-fetch — belt-and-suspenders in case
+  // Supabase Realtime drops or RLS blocks change events.
+  setInterval(async () => {
+    try {
+      const { data } = await db
+        .from("devices")
+        .select("*")
+        .order("last_seen", { ascending: false });
+      if (data) {
+        state.devices = data;
+        renderDeviceCards();
+        renderStats();
+        updateTopbarPills();
+        updateTopbarStatus();
+        if (state.currentView === "devices") renderDevicesFull();
+      }
+    } catch (e) {
+      /* silent — UI stays on last known state */
+    }
+  }, 120_000);
 }
 
 document.addEventListener("DOMContentLoaded", () => {

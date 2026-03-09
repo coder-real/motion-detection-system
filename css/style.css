@@ -2337,62 +2337,65 @@ a {
 
 /* ============================================================ THEME TOGGLE BUTTON */
 #theme-toggle {
-  background: var(--surface-3);
-  border: 1px solid var(--border-hi);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 100px;
   cursor: pointer;
-  padding: 4px;
+  padding: 5px;
   display: inline-flex;
   align-items: center;
   transition:
-    background var(--trans),
-    border-color var(--trans),
-    box-shadow var(--trans);
+    background 0.3s ease,
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
   flex-shrink: 0;
 }
 
 #theme-toggle:hover {
-  background: var(--surface-4);
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.05);
 }
 
 .theme-toggle-track {
   display: flex;
   align-items: center;
-  width: 52px;
-  height: 26px;
+  width: 56px;
+  height: 28px;
   position: relative;
+  background: inherit;
+  border-radius: inherit;
 }
 
 .theme-toggle-thumb {
   position: absolute;
   left: 2px;
-  width: 22px;
-  height: 22px;
-  background: var(--white-90);
+  width: 24px;
+  height: 24px;
+  background: #ffffff;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   transition:
-    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
-    background var(--trans);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  z-index: 2;
 }
 
 body.light .theme-toggle-thumb {
-  transform: translateX(26px);
-  background: #0a0c10;
+  transform: translateX(28px);
+  background: #111827; /* Very dark rich color for contrast */
 }
 
 .theme-icon {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   position: absolute;
   transition:
-    opacity 0.2s ease,
-    transform 0.3s ease;
+    opacity 0.3s ease,
+    transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 /* Dark mode: show moon, hide sun */
@@ -2421,11 +2424,12 @@ body.light .theme-icon-sun {
 .cam-selector-wrap {
   display: inline-flex;
   align-items: center;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 100px;
-  padding: 3px;
-  gap: 2px;
+  padding: 4px;
+  gap: 4px;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 /* Individual camera pill button */
@@ -2433,33 +2437,29 @@ body.light .theme-icon-sun {
   background: transparent;
   border: none;
   border-radius: 100px;
-  padding: 5px 14px;
-  font-family: var(--font-data);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.03em;
+  padding: 8px 16px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--white-45);
   cursor: pointer;
-  transition:
-    background var(--trans),
-    color var(--trans),
-    box-shadow var(--trans);
+  transition: all 0.3s ease;
   white-space: nowrap;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .cam-btn:hover {
   color: var(--white-90);
-  background: var(--surface-3);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .cam-btn.active {
-  background: var(--red);
+  background: #ef4444; /* Brighter, more modern red */
   color: #ffffff;
-  font-weight: 600;
-  box-shadow: 0 2px 8px rgba(204, 0, 0, 0.35);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
 }
 
 /* Light mode overrides for camera pills */
