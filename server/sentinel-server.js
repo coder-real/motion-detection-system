@@ -358,6 +358,52 @@ wss.on("connection", (ws, req) => {
       // alive
     } else if (msg.type === "ack") {
       handleAck(msg.id, msg.status || "done");
+    } else if (msg.type === "ws_log") {
+      // ESP32 routes logs through WS to avoid a new TLS handshake.
+      // Server writes to Supabase on its existing TLS connection.
+      const { type: _, ...row } = msg;
+      supa
+        .from("logs")
+        .insert(row)
+        .then(({ error }) => {
+          if (error) log("WS", `ws_log insert error: ${error.message}`);
+        });
+    } else if (msg.type === "ws_heartbeat") {
+      // Heartbeat piggybacked on WS — no extra TLS from ESP32.
+      const { type: _, ...hb } = msg;
+      const devId = hb.device_id || deviceId;
+      Promise.all([
+        supa.from("heartbeats").insert(hb),
+        supa.from("devices").upsert(
+          {
+            device_id: devId,
+            status: "online",
+            last_seen: new Date().toISOString(),
+            ip_address: hb.ip_address,
+            firmware_version: hb.firmware_version,
+            free_heap: hb.free_heap,
+            rssi: hb.rssi,
+          },
+          { onConflict: "device_id" },
+        ),
+      ]).then(([hbRes, devRes]) => {
+        if (hbRes.error)
+          log("WS", `ws_heartbeat insert error: ${hbRes.error.message}`);
+        if (devRes.error)
+          log(
+            "WS",
+            `ws_heartbeat device upsert error: ${devRes.error.message}`,
+          );
+      });
+    } else if (msg.type === "ws_hub_heartbeat") {
+      // Sensor hub heartbeat via CAM's WS connection.
+      const { type: _, ...hb } = msg;
+      supa
+        .from("heartbeats")
+        .insert(hb)
+        .then(({ error }) => {
+          if (error) log("WS", `ws_hub_heartbeat error: ${error.message}`);
+        });
     } else {
       log("WS", `Unknown type: ${msg.type}`);
     }
