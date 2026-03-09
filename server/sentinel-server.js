@@ -301,6 +301,111 @@ ${
 });
 
 // ─────────────────────────────────────────────────────────────────
+//  BINARY WEBSOCKET UPLOAD
+//
+//  ESP32 sends JPEG images as binary WS frames to avoid opening a
+//  new TLS connection (which takes 2-4s and 40KB heap every time).
+//
+//  Frame format:
+//    [4 bytes uint32-LE: JSON metadata length]
+//    [JSON metadata string]
+//    [raw JPEG bytes]
+//
+//  After storing the image and inserting the event row, server
+//  sends back a text frame:
+//    { type:"upload_ack", status:"done"|"failed", cmdId, url }
+// ─────────────────────────────────────────────────────────────────
+async function handleBinaryUpload(buf, deviceId) {
+  const metaLen = buf.readUInt32LE(0);
+  const metaJson = buf.slice(4, 4 + metaLen).toString();
+  const jpeg = buf.slice(4 + metaLen);
+
+  let meta;
+  try {
+    meta = JSON.parse(metaJson);
+  } catch (e) {
+    log("WS", `Binary upload: bad metadata JSON: ${e.message}`);
+    return;
+  }
+
+  const devId = meta.deviceId || deviceId || "unknown";
+  const snapType = meta.snapType || "manual";
+  const cmdId = meta.cmdId || "";
+  const filename = `events/${snapType}_${Date.now()}.jpg`;
+
+  log(
+    "WS",
+    `Binary upload ${(jpeg.length / 1024).toFixed(1)}KB  type=${snapType}  dev=${devId}`,
+  );
+
+  const sendAck = (status, url) => {
+    const sock = deviceSockets.get(deviceId);
+    if (sock?.readyState === WebSocket.OPEN) {
+      sock.send(
+        JSON.stringify({ type: "upload_ack", status, cmdId, url: url || "" }),
+      );
+    }
+  };
+
+  // ── 1. Upload to Supabase Storage ─────────────────────────────
+  const { error: storErr } = await supa.storage
+    .from(BUCKET)
+    .upload(filename, jpeg, { contentType: "image/jpeg", upsert: true });
+
+  if (storErr) {
+    metrics.uploads.fail++;
+    log("WS", `Binary upload storage FAILED: ${storErr.message}`);
+    sendAck("failed");
+    return;
+  }
+
+  metrics.uploads.ok++;
+  const { data: urlData } = supa.storage.from(BUCKET).getPublicUrl(filename);
+  const publicUrl = urlData.publicUrl;
+
+  // ── 2. Insert event row ────────────────────────────────────────
+  const gpsValid = meta.gpsValid === "1" || meta.gpsValid === "true";
+  const lat = parseFloat(meta.latitude || "0");
+  const lng = parseFloat(meta.longitude || "0");
+
+  const eventRow = {
+    device_id: devId,
+    triggered_by: meta.triggeredBy || devId,
+    snapshot_type: snapType,
+    snapshot_url: publicUrl,
+    snapshot_path: filename,
+    latitude: gpsValid && lat ? lat : 0,
+    longitude: gpsValid && lng ? lng : 0,
+    distance_cm: parseFloat(meta.distanceCm || "0"),
+    sms_sent: meta.smsSent === "1",
+    altitude_m: parseFloat(meta.altitudeM || "0"),
+    speed_kmh: parseFloat(meta.speedKmh || "0"),
+    hdop: parseFloat(meta.hdop || "0"),
+    satellites: parseInt(meta.satellites || "0", 10),
+    gps_valid: gpsValid,
+    hub_heap_bytes: parseInt(meta.hubHeap || "0", 10),
+    hub_battery_v: parseFloat(meta.hubBattery || "0"),
+    hub_gsm_csq: parseInt(meta.hubGsmCsq || "0", 10),
+    hub_uptime_s: parseInt(meta.hubUptimeS || "0", 10),
+    hub_fw_version: meta.hubFwVersion || "",
+    cam_heap_bytes: parseInt(meta.camHeap || "0", 10),
+    cam_rssi: parseInt(meta.camRssi || "0", 10),
+  };
+
+  const { error: evErr } = await supa.from("events").insert(eventRow);
+  if (evErr) {
+    metrics.events.fail++;
+    log("WS", `Binary upload event insert FAILED: ${evErr.message}`);
+    // Image is safely stored — still ack as done
+  } else {
+    metrics.events.ok++;
+  }
+
+  log("WS", `Binary upload OK → ${filename}`);
+  sendAck("done", publicUrl);
+}
+
+// ─────────────────────────────────────────────────────────────────
 //  WEBSOCKET SERVER
 //  ESP32 connects once at boot and keeps the connection alive.
 //  The server pushes commands as JSON frames; ESP32 sends acks back.
@@ -331,7 +436,14 @@ wss.on("connection", (ws, req) => {
       ws.send(JSON.stringify({ type: "ping" }));
   }, 15_000);
 
-  ws.on("message", (data) => {
+  ws.on("message", (data, isBinary) => {
+    // Binary frame = JPEG image upload from ESP32
+    if (isBinary) {
+      handleBinaryUpload(Buffer.from(data), deviceId).catch((err) =>
+        log("WS", `Binary upload error: ${err.message}`),
+      );
+      return;
+    }
     let msg;
     try {
       msg = JSON.parse(data.toString());
