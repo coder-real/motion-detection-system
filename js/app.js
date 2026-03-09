@@ -12,8 +12,11 @@
 import { db } from "./supabaseClient.js";
 
 // Read from js/config.js — update that file, not here
-const { CAM_DEVICE_ID, SENTINEL_SERVER_URL } = window.SENTINEL_CONFIG;
+const { CAM_DEVICES, SENTINEL_SERVER_URL } = window.SENTINEL_CONFIG;
 const SERVER_URL = SENTINEL_SERVER_URL;
+// CAM_DEVICES is an array: [{ id, label }, ...]
+// snapshotTarget tracks which camera the snapshot button targets.
+let snapshotTarget = CAM_DEVICES[0]?.id || "ESP32-CAM-01";
 
 // ============================================================
 // STATE
@@ -352,6 +355,37 @@ function setupSnapshotButton() {
   ["btn-snapshot", "btn-snapshot-2"].forEach((id) => {
     el(id)?.addEventListener("click", triggerSnapshot);
   });
+  buildCameraSelector();
+}
+
+// Build a small <select> inside every element with class "cam-selector-wrap"
+// so the user can pick which camera to snapshot.
+function buildCameraSelector() {
+  document.querySelectorAll(".cam-selector-wrap").forEach((wrap) => {
+    if (CAM_DEVICES.length <= 1) {
+      wrap.style.display = "none";
+      return;
+    }
+    const sel = document.createElement("select");
+    sel.className = "cam-selector";
+    sel.title = "Select camera to snapshot";
+    CAM_DEVICES.forEach(({ id, label }) => {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    });
+    sel.value = snapshotTarget;
+    sel.addEventListener("change", () => {
+      snapshotTarget = sel.value;
+      // Sync all other selectors
+      document.querySelectorAll(".cam-selector").forEach((s) => {
+        s.value = snapshotTarget;
+      });
+    });
+    wrap.innerHTML = "";
+    wrap.appendChild(sel);
+  });
 }
 
 async function triggerSnapshot() {
@@ -380,12 +414,14 @@ async function triggerSnapshot() {
     const { error: delError } = await db
       .from("commands")
       .delete()
-      .eq("device_id", CAM_DEVICE_ID)
+      .eq("device_id", snapshotTarget)
       .in("status", ["pending", "processing"]);
     if (delError) console.warn("[CMD] Delete stale failed:", delError.message);
 
+    const targetLabel =
+      CAM_DEVICES.find((d) => d.id === snapshotTarget)?.label || snapshotTarget;
     const { error } = await db.from("commands").insert({
-      device_id: CAM_DEVICE_ID,
+      device_id: snapshotTarget,
       command: "capture",
       status: "pending",
     });
@@ -396,7 +432,7 @@ async function triggerSnapshot() {
     showToast(
       "info",
       "Snapshot Sent",
-      "Camera capturing via WebSocket (~2-4s)...",
+      `${targetLabel} capturing via WebSocket (~2-4s)...`,
       8000,
     );
 
@@ -545,9 +581,9 @@ function renderGPSBar() {
 // ============================================================
 function updateTopbarPills() {
   const camDev = state.devices.find(
-    (d) => d.device_id === CAM_DEVICE_ID || d.device_type?.includes("cam"),
+    (d) => d.device_id === snapshotTarget || d.device_type?.includes("cam"),
   );
-  const latestHB = state.deviceStats[CAM_DEVICE_ID];
+  const latestHB = state.deviceStats[snapshotTarget];
   const camOnline = camDev?.status === "online";
 
   setPill(
@@ -966,7 +1002,7 @@ function setupLightbox() {
 // REALTIME — filtered, append-only
 // ============================================================
 function setupRealtime() {
-  // New events — filtered to this device
+  // New events — no filter, receives from ALL connected cameras
   db.channel("events-rt")
     .on(
       "postgres_changes",
@@ -974,7 +1010,6 @@ function setupRealtime() {
         event: "INSERT",
         schema: "public",
         table: "events",
-        filter: `device_id=eq.${CAM_DEVICE_ID}`,
       },
       (payload) => {
         const event = payload.new;
@@ -984,7 +1019,11 @@ function setupRealtime() {
           updateCameraImage(event.snapshot_url, event.created_at, event);
 
         // Command completed — unlock snapshot button
-        if (event.snapshot_type === "manual" && snapshotPending) {
+        if (
+          event.snapshot_type === "manual" &&
+          snapshotPending &&
+          event.device_id === snapshotTarget
+        ) {
           snapshotPending = false;
           unlockSnapshotButtons();
           el("live-loading")?.classList.remove("visible");

@@ -46,15 +46,14 @@ const metrics = {
 };
 
 // ── WebSocket state ───────────────────────────────────────────────
-// One live WebSocket per connected ESP32.
-// esp32Socket = the active connection (null if ESP32 not connected).
-// pendingAcks = Map<commandId, { timer, resolve }>
-// commandDedup = Set<commandId> — IDs already pushed this session
-let esp32Socket = null;
+// deviceSockets: Map<device_id, WebSocket>
+//   One entry per connected ESP32. Keyed by device_id received in
+//   the "hello" message. Multiple devices connect simultaneously.
+const deviceSockets = new Map();
 const pendingAcks = new Map();
 const commandDedup = new Set();
-const COMMAND_DEDUP_TTL = 90_000; // forget after 90s
-const ACK_TIMEOUT_MS = 20_000; // ESP32 has 20s to ack
+const COMMAND_DEDUP_TTL = 90_000;
+const ACK_TIMEOUT_MS = 35_000;
 
 // ─────────────────────────────────────────────────────────────────
 //  HTTP + EXPRESS
@@ -248,13 +247,17 @@ app.get("/ping", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 //  GET /health  — lightweight ping
 // ─────────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => {
+  const devStatus = {};
+  deviceSockets.forEach((ws, id) => {
+    devStatus[id] =
+      ws.readyState === WebSocket.OPEN ? "connected" : "disconnected";
+  });
   res.json({
     status: "ok",
-    version: "1.0.0",
+    version: "1.2.0",
     uptime: Math.floor(process.uptime()),
-    esp32:
-      esp32Socket?.readyState === WebSocket.OPEN ? "connected" : "disconnected",
-    wsClients: metrics.wsConnections,
+    devices: devStatus,
+    devicesConnected: deviceSockets.size,
     uploads: metrics.uploads,
     events: metrics.events,
     commands: metrics.commands,
@@ -275,7 +278,15 @@ h2{color:#4af}table{border-spacing:0 8px}td:first-child{color:#888;padding-right
 .on{color:#4f4}  .off{color:#f44}</style></head><body>
 <h2>SENTINEL SERVER v1.0.0</h2>
 <table>
-<tr><td>ESP32 WebSocket</td><td class="${esp32Socket?.readyState === 1 ? "on" : "off"}">${esp32Socket?.readyState === 1 ? "Connected" : "Disconnected"}</td></tr>
+${
+  [...deviceSockets.entries()]
+    .map(
+      ([id, ws]) =>
+        `<tr><td>${id}</td><td class="${ws.readyState === 1 ? "on" : "off"}">${ws.readyState === 1 ? "Connected ✓" : "Disconnected ✗"}</td></tr>`,
+    )
+    .join("") ||
+  '<tr><td>ESP32 devices</td><td class="off">None connected</td></tr>'
+}
 <tr><td>Supabase Realtime</td><td class="on">Subscribed</td></tr>
 <tr><td>Server uptime</td><td>${Math.floor(upSec / 3600)}h ${Math.floor((upSec % 3600) / 60)}m ${upSec % 60}s</td></tr>
 <tr><td>Uploads</td><td>${metrics.uploads.ok} OK / ${metrics.uploads.fail} fail</td></tr>
@@ -308,22 +319,16 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 
 wss.on("connection", (ws, req) => {
   const ip = req.socket.remoteAddress;
-  log("WS", `ESP32 connected from ${ip}`);
+  log("WS", `Device connected from ${ip} (waiting for hello...)`);
 
-  // If there was already a socket (reconnect), close the old one cleanly
-  if (esp32Socket && esp32Socket.readyState === WebSocket.OPEN) {
-    log("WS", "Closing previous connection (ESP32 reconnected)");
-    esp32Socket.terminate();
-    metrics.wsReconnects++;
-  }
-  esp32Socket = ws;
+  // deviceId is unknown until we receive the "hello" message.
+  // We hold it in closure scope and register in deviceSockets then.
+  let deviceId = null;
   metrics.wsConnections++;
 
-  // Heartbeat ping every 15s — detects dead connections early
-  let pingTimer = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
+  const pingTimer = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN)
       ws.send(JSON.stringify({ type: "ping" }));
-    }
   }, 15_000);
 
   ws.on("message", (data) => {
@@ -331,37 +336,49 @@ wss.on("connection", (ws, req) => {
     try {
       msg = JSON.parse(data.toString());
     } catch {
-      log("WS", `Non-JSON message: ${data.toString().slice(0, 80)}`);
+      log("WS", `Non-JSON: ${data.toString().slice(0, 80)}`);
       return;
     }
 
     if (msg.type === "hello") {
+      deviceId = msg.deviceId;
+      // Close any stale socket for this device (reconnect case)
+      const prev = deviceSockets.get(deviceId);
+      if (prev && prev !== ws && prev.readyState === WebSocket.OPEN) {
+        log("WS", `${deviceId} reconnected — closing previous socket`);
+        prev.terminate();
+        metrics.wsReconnects++;
+      }
+      deviceSockets.set(deviceId, ws);
       log(
         "WS",
-        `ESP32 identified — id=${msg.deviceId}  fw=${msg.version}  heap=${msg.freeHeap ? Math.round(msg.freeHeap / 1024) + "KB" : "?"}`,
+        `${deviceId} identified  fw=${msg.version}  heap=${msg.freeHeap ? Math.round(msg.freeHeap / 1024) + "KB" : "?"}  total_connected=${deviceSockets.size}`,
       );
     } else if (msg.type === "pong") {
-      // alive — no action needed
+      // alive
     } else if (msg.type === "ack") {
-      // ESP32 has finished executing a command
       handleAck(msg.id, msg.status || "done");
     } else {
-      log("WS", `Unknown message type: ${msg.type}`);
+      log("WS", `Unknown type: ${msg.type}`);
     }
   });
 
   ws.on("close", (code, reason) => {
-    log(
-      "WS",
-      `ESP32 disconnected code=${code} reason=${reason?.toString() || "—"}`,
-    );
     clearInterval(pingTimer);
-    if (esp32Socket === ws) esp32Socket = null;
+    if (deviceId && deviceSockets.get(deviceId) === ws) {
+      deviceSockets.delete(deviceId);
+      log(
+        "WS",
+        `${deviceId} disconnected  code=${code}  remaining=${deviceSockets.size}`,
+      );
+    } else {
+      log("WS", `Unnamed socket closed  code=${code}`);
+    }
   });
 
-  ws.on("error", (err) => {
-    log("WS", `Error: ${err.message}`);
-  });
+  ws.on("error", (err) =>
+    log("WS", `Error [${deviceId || "unknown"}]: ${err.message}`),
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -397,11 +414,21 @@ async function pushCommandToESP32(cmd) {
     log("CMD", `Pre-mark failed: ${preErr.message} — pushing anyway`);
   }
 
+<<<<<<< HEAD
   // Push to ESP32 if connected
   if (!esp32Socket || esp32Socket.readyState !== WebSocket.OPEN) {
     log(
       "CMD",
       `ESP32 not connected — command id=${id.slice(0, 8)} marked failed`,
+=======
+  // Route to the correct device socket
+  const targetSocket = deviceSockets.get(device_id);
+  if (!targetSocket || targetSocket.readyState !== WebSocket.OPEN) {
+    const connected = [...deviceSockets.keys()].join(", ") || "none";
+    log(
+      "CMD",
+      `${device_id} not connected (connected: ${connected}) — id=${id.slice(0, 8)} failed`,
+>>>>>>> 02b7b69 (render link updated)
     );
     metrics.commands.ackFailed++;
     await supa.from("commands").update({ status: "failed" }).eq("id", id);
@@ -409,8 +436,8 @@ async function pushCommandToESP32(cmd) {
   }
 
   metrics.commands.pushed++;
-  esp32Socket.send(JSON.stringify({ type: "command", id, command }));
-  log("CMD", `Pushed to ESP32: ${command}  id=${id.slice(0, 8)}`);
+  targetSocket.send(JSON.stringify({ type: "command", id, command }));
+  log("CMD", `→ ${device_id}: ${command}  id=${id.slice(0, 8)}`);
 
   // Wait for ack with timeout
   await new Promise((resolve) => {
@@ -464,7 +491,9 @@ function subscribeToCommands() {
         event: "INSERT",
         schema: "public",
         table: "commands",
-        filter: `device_id=eq.${DEVICE_ID}`,
+        // No filter — server handles commands for ALL connected devices.
+        // The device_id in each command row is used to route to the
+        // correct WebSocket in deviceSockets Map.
       },
       (payload) => {
         const cmd = payload.new;
@@ -476,7 +505,7 @@ function subscribeToCommands() {
     )
     .subscribe((status, err) => {
       if (status === "SUBSCRIBED") {
-        log("RT", `Commands channel active — watching device_id=${DEVICE_ID}`);
+        log("RT", `Commands channel active — watching ALL devices`);
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
         log(
           "RT",
@@ -551,7 +580,10 @@ function log(mod, msg) {
 // ─────────────────────────────────────────────────────────────────
 function shutdown(signal) {
   log("SYS", `${signal} received — shutting down`);
-  if (esp32Socket?.readyState === WebSocket.OPEN) esp32Socket.close();
+  deviceSockets.forEach((ws, id) => {
+    if (ws.readyState === WebSocket.OPEN) ws.close();
+    log("SYS", `Closed socket for ${id}`);
+  });
   server.close(() => process.exit(0));
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));

@@ -1206,6 +1206,25 @@ a {
   border: 1px solid rgba(155, 114, 255, 0.25);
 }
 
+/* Camera selector (multi-device) */
+.cam-selector-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+.cam-selector {
+  background: var(--bg-card, #1a1a1a);
+  color: var(--white-dim, #ccc);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-right: 6px;
+}
+.cam-selector:focus {
+  outline: none;
+  border-color: var(--blue, #4af);
+}
 /* ============================================================ MAP */
 #map {
   height: 280px;

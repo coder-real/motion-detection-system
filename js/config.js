@@ -11,9 +11,11 @@ window.SENTINEL_CONFIG = {
   // Your Render service URL (no trailing slash).
   // After deploying to Render, replace this with your actual URL.
   // Format: "https://your-service-name.onrender.com"
-  SENTINEL_SERVER_URL: "https://YOUR-SERVICE.onrender.com",
+  SENTINEL_SERVER_URL: "https://motion-detection-system-jai3.onrender.com",
 
   // ── Device ID ─────────────────────────────────────────────
-  CAM_DEVICE_ID: "ESP32-CAM-01",
-  CAM_DEVICE_ID: "ESP32-CAM-02",
+  CAM_DEVICES: [
+    { id: "ESP32-CAM-01", label: "Camera 1" },
+    { id: "ESP32-CAM-02", label: "Camera 2" },
+  ],
 };
