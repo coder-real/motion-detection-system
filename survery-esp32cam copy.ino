@@ -435,8 +435,7 @@ void handleSensorPacket(unsigned long now) {
 //  This function opens the TLS socket directly, writes the HTTP
 //  request headers manually, then streams the body in 4KB blocks.
 //  Returns the HTTP response code, or -1 on connection failure.
-// ══════════════════════════════════════════════════════════════
-static const size_t STREAM_CHUNK = 4096;
+static const size_t STREAM_CHUNK = 1024;
 
 int streamUpload(const String& boundary, const String& header,
                  const uint8_t* imgBuf, size_t imgLen,
@@ -665,7 +664,6 @@ void captureAndUpload(const char* snapType, bool fastCapture) {
 
     if (wsConnected) {
         bool sent = uploadViaWebSocket(imgBuf, imgLen, snapType, pendingCmdId);
-        free(imgBuf);
         if (sent) {
             usedWS = true;
             // Ack and busy-release happen asynchronously in upload_ack handler.
@@ -676,6 +674,7 @@ void captureAndUpload(const char* snapType, bool fastCapture) {
             pendingCmdId    = "";
             captureBusy     = false;
             uploadOK++;
+            free(imgBuf); // <--- FREE HERE ONLY IF WS SUCCEEDED
             return;  // ack arrives via webSocketEvent upload_ack
         }
         // sendBIN failed — fall through to HTTP
@@ -829,10 +828,10 @@ void initCamera() {
     cfg.xclk_freq_hz=20000000;
     cfg.pixel_format=PIXFORMAT_JPEG;
     if (psramFound()) {
-        // UXGA (1600x1200) Q10 in all modes.
-        // streamUpload() sends in 4KB chunks — file size is not a limit.
-        cfg.frame_size=FRAMESIZE_UXGA; cfg.jpeg_quality=6; cfg.fb_count=2;
-        lg("CAM","PSRAM — UXGA Q6 fb=2");
+        // Lowered to SVGA (800x600) Q10 to prevent 331KB giant frames.
+        // Large frames cause TLS allocation failures and WS sendBIN lockups.
+        cfg.frame_size=FRAMESIZE_SVGA; cfg.jpeg_quality=10; cfg.fb_count=2;
+        lg("CAM","PSRAM — SVGA Q10 fb=2");
     } else {
         cfg.frame_size=FRAMESIZE_SVGA; cfg.jpeg_quality=12; cfg.fb_count=1;
         lg("CAM","No PSRAM — SVGA Q12 fb=1");

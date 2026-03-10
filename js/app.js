@@ -130,44 +130,80 @@ function switchView(view) {
 }
 
 // ============================================================
+// DEBOUNCE UTIL — prevents render thrashing from rapid events
+// ============================================================
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+// Debounced versions used by high-frequency Realtime channels.
+// renderStats + renderDeviceCards fire on every heartbeat (30s) but
+// also on every device-table change. Debouncing at 300ms collapses
+// bursts without any visible lag.
+const debouncedRenderStats = debounce(renderStats, 300);
+const debouncedRenderDeviceCards = debounce(renderDeviceCards, 300);
+const debouncedUpdateTopbar = debounce(() => {
+  updateTopbarPills();
+  updateTopbarStatus();
+}, 300);
+
+// ============================================================
 // LOAD INITIAL DATA
 // ============================================================
 async function loadInitialData() {
   try {
-    const [eventsRes, devicesRes, logsRes, hbRes, countRes] = await Promise.all(
-      [
-        db
-          .from("events")
-          .select(
-            "id,device_id,triggered_by,snapshot_type,latitude,longitude,snapshot_url,distance_cm,sms_sent,created_at",
-          )
-          .order("created_at", { ascending: false })
-          .limit(50),
-        db.from("devices").select("*").order("last_seen", { ascending: false }),
-        db
-          .from("logs")
-          .select("id,level,category,message,created_at")
-          .order("created_at", { ascending: false })
-          .limit(200),
-        db
-          .from("heartbeats")
-          .select("*")
-          .order("created_at", { ascending: false })
-          .limit(50),
-        db.from("events").select("*", { count: "exact", head: true }),
-      ],
-    );
+    // Events: omit removed fields (gps_accuracy, altitude, speed, hdop,
+    //   ai_labels, hub_gsm_csq, hub_fw_version) per spec §3.
+    // Devices: always fresh from DB, never cached.
+    // Heartbeats: one per device_id (most recent) → deviceStats.
+    const [eventsRes, devicesRes, logsRes, countRes] = await Promise.all([
+      db
+        .from("events")
+        .select(
+          "id,device_id,triggered_by,snapshot_type,latitude,longitude,snapshot_url,distance_cm,sms_sent,created_at,satellites,gps_valid,cam_rssi,cam_heap_bytes",
+        )
+        .order("created_at", { ascending: false })
+        .limit(50),
+      db
+        .from("devices")
+        .select(
+          "device_id,name,device_type,status,last_seen,ip_address,firmware_version,created_at",
+        )
+        .order("last_seen", { ascending: false }),
+      db
+        .from("logs")
+        .select("id,level,category,message,created_at,device_id")
+        .order("created_at", { ascending: false })
+        .limit(200),
+      db.from("events").select("*", { count: "exact", head: true }),
+    ]);
 
     state.totalEvents = countRes.count ?? eventsRes.data?.length ?? 0;
     state.events = eventsRes.data || [];
     state.devices = devicesRes.data || [];
     state.logs = logsRes.data || [];
-    state.heartbeats = hbRes.data || [];
 
-    state.heartbeats.forEach((hb) => {
-      if (!state.deviceStats[hb.device_id])
-        state.deviceStats[hb.device_id] = hb;
-    });
+    // Load latest heartbeat per device from DB (not cached)
+    state.deviceStats = {};
+    const deviceIds = state.devices.map((d) => d.device_id);
+    if (deviceIds.length > 0) {
+      // Fetch last 5 heartbeats per device to get one per device_id
+      const { data: hbData } = await db
+        .from("heartbeats")
+        .select("*")
+        .in("device_id", deviceIds)
+        .order("created_at", { ascending: false })
+        .limit(deviceIds.length * 5);
+      (hbData || []).forEach((hb) => {
+        // Only keep the newest per device_id (they're already DESC ordered)
+        if (!state.deviceStats[hb.device_id])
+          state.deviceStats[hb.device_id] = hb;
+      });
+    }
 
     const latestGPS = state.events.find(
       (e) => e.latitude && Math.abs(e.latitude) > 0.001,
@@ -366,28 +402,29 @@ function setupSnapshotButton() {
 // so the user can pick which camera to snapshot.
 function buildCameraSelector() {
   document.querySelectorAll(".cam-selector-wrap").forEach((wrap) => {
-    // Hide if only one camera is configured
     if (CAM_DEVICES.length <= 1) {
       wrap.style.display = "none";
       return;
     }
-    wrap.innerHTML = "";
+    const sel = document.createElement("select");
+    sel.className = "cam-selector";
+    sel.title = "Select camera to snapshot";
     CAM_DEVICES.forEach(({ id, label }) => {
-      const btn = document.createElement("button");
-      btn.className = "cam-btn" + (id === snapshotTarget ? " active" : "");
-      btn.dataset.camId = id;
-      btn.title = `Switch snapshot target to ${label}`;
-      // Camera icon SVG + label
-      btn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/></svg>${label}`;
-      btn.addEventListener("click", () => {
-        snapshotTarget = id;
-        // Update all cam-selector-wrap instances
-        document.querySelectorAll(".cam-btn").forEach((b) => {
-          b.classList.toggle("active", b.dataset.camId === id);
-        });
-      });
-      wrap.appendChild(btn);
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = label;
+      sel.appendChild(opt);
     });
+    sel.value = snapshotTarget;
+    sel.addEventListener("change", () => {
+      snapshotTarget = sel.value;
+      // Sync all other selectors
+      document.querySelectorAll(".cam-selector").forEach((s) => {
+        s.value = snapshotTarget;
+      });
+    });
+    wrap.innerHTML = "";
+    wrap.appendChild(sel);
   });
 }
 
@@ -583,43 +620,78 @@ function renderGPSBar() {
 // TOPBAR PILLS
 // ============================================================
 function updateTopbarPills() {
-  const camDev = state.devices.find(
-    (d) => d.device_id === snapshotTarget || d.device_type?.includes("cam"),
-  );
+  // ── Camera pill: use the SELECTED camera (snapshotTarget) ─────
+  // All values come from DB-fresh state.devices + state.deviceStats.
+  const camDev = state.devices.find((d) => d.device_id === snapshotTarget);
   const latestHB = state.deviceStats[snapshotTarget];
   const camOnline = camDev?.status === "online";
 
+  const camLabel = camOnline
+    ? "Online"
+    : camDev?.last_seen
+      ? timeAgo(camDev.last_seen)
+      : "Offline";
   setPill(
     "pill-camera",
     camOnline ? "online" : "offline",
     camOnline ? "green" : "grey",
-    camOnline ? "Online" : "Offline",
+    camLabel,
   );
 
-  const rssi = latestHB?.rssi;
+  // ── WiFi pill: RSSI from latest heartbeat for selected camera ─
+  const rssi = latestHB?.rssi ?? latestHB?.cam_rssi ?? null;
+  const rssiColor =
+    rssi === null
+      ? camOnline
+        ? "green"
+        : "grey"
+      : rssi > -65
+        ? "green"
+        : rssi > -80
+          ? "yellow"
+          : "red";
   setPill(
     "pill-wifi",
     camOnline ? "online" : "offline",
-    camOnline ? (rssi && rssi > -70 ? "green" : "yellow") : "grey",
-    rssi ? `${rssi} dBm` : camOnline ? "Connected" : "—",
+    camOnline ? rssiColor : "grey",
+    rssi !== null ? `${rssi} dBm` : camOnline ? "Connected" : "—",
   );
 
+  // ── ESP-NOW / Sensor pill ──────────────────────────────────────
   const recentMotion = state.events.find((e) => e.snapshot_type === "motion");
   const espActive =
-    recentMotion && Date.now() - new Date(recentMotion.created_at) < 600000;
+    recentMotion && Date.now() - new Date(recentMotion.created_at) < 600_000;
+  const hubAlive = Object.values(state.deviceStats).some(
+    (hb) =>
+      hb.hub_uptime_s > 0 &&
+      hb.created_at &&
+      Date.now() - new Date(hb.created_at).getTime() < 180_000,
+  );
+  const espOnline = espActive || hubAlive;
   setPill(
     "pill-espnow",
-    espActive ? "online" : "offline",
-    espActive ? "green" : "grey",
-    espActive ? "Active" : "Standby",
+    espOnline ? "online" : "offline",
+    espOnline ? "green" : "grey",
+    espOnline ? "Active" : "Standby",
   );
 
-  const smsSent = state.events.find((e) => e.sms_sent);
+  // ── GSM pill: hub heartbeat data only (never inferred) ────────
+  const hubHB = Object.values(state.deviceStats).find(
+    (hb) => hb.hub_gsm_csq !== undefined,
+  );
+  const gsmCsq = hubHB?.hub_gsm_csq;
+  const gsmReady = gsmCsq != null && gsmCsq > 0;
+  const gsmLabel =
+    gsmCsq != null
+      ? `CSQ ${gsmCsq}`
+      : state.events.some((e) => e.sms_sent)
+        ? "Ready"
+        : "Unknown";
   setPill(
     "pill-gsm",
-    smsSent ? "online" : "offline",
-    smsSent ? "green" : "grey",
-    smsSent ? "Ready" : "Unknown",
+    gsmReady ? "online" : "offline",
+    gsmReady ? "green" : "grey",
+    gsmLabel,
   );
 }
 
@@ -715,9 +787,32 @@ function createDeviceCard(device) {
   const div = document.createElement("div");
   div.className = "device-card";
   div.dataset.deviceId = device.device_id;
+
+  const hb = state.deviceStats[device.device_id];
   const status = device.status || "offline";
   const lastSeen = device.last_seen ? timeAgo(device.last_seen) : "never";
   const isCam = device.device_type?.includes("cam");
+
+  // Live metrics from latest heartbeat
+  const rssi = hb?.rssi ? `${hb.rssi} dBm` : null;
+  const heap = hb?.free_heap ? `${Math.round(hb.free_heap / 1024)} KB` : null;
+  const uptime = hb?.uptime_seconds ? formatUptime(hb.uptime_seconds) : null;
+  const fw = hb?.firmware_version || device.firmware_version || null;
+  const ip = hb?.ip_address || device.ip_address || "—";
+
+  // Signal strength colour
+  const rssiColor = !rssi
+    ? "grey"
+    : hb.rssi > -65
+      ? "var(--green)"
+      : hb.rssi > -80
+        ? "var(--yellow)"
+        : "var(--red-bright)";
+
+  const metaBits = [ip, uptime ? `↑ ${uptime}` : null, fw ? `fw ${fw}` : null]
+    .filter(Boolean)
+    .join(" · ");
+
   div.innerHTML = `
     <div class="device-icon">
       ${
@@ -728,10 +823,25 @@ function createDeviceCard(device) {
     </div>
     <div class="device-info">
       <div class="device-name">${device.name || device.device_id}</div>
-      <div class="device-meta">${device.ip_address || "—"} · ${lastSeen}</div>
+      <div class="device-meta">${metaBits} · ${lastSeen}</div>
+      ${
+        rssi || heap
+          ? `<div class="device-live-stats">
+        ${rssi ? `<span style="color:${rssiColor};font-size:10px">⬡ ${rssi}</span>` : ""}
+        ${heap ? `<span style="color:var(--white-dim);font-size:10px">⬡ ${heap}</span>` : ""}
+      </div>`
+          : ""
+      }
     </div>
     <div class="device-status-pill ${status}">${status}</div>`;
   return div;
+}
+
+function formatUptime(seconds) {
+  if (!seconds) return null;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 // ============================================================
@@ -824,6 +934,38 @@ function renderGallery() {
 // ============================================================
 // DEVICES FULL VIEW
 // ============================================================
+// ── helper: coloured status pill string ──────────────────────
+function statusBadge(status) {
+  return `<span class="device-status-pill ${status}">${status}</span>`;
+}
+
+// ── helper: signal colour from RSSI value ────────────────────
+function rssiColor(rssi) {
+  if (rssi == null) return "var(--white-45)";
+  if (rssi > -65) return "var(--green)";
+  if (rssi > -80) return "var(--yellow)";
+  return "var(--red-bright)";
+}
+
+// ── helper: render one data field row ────────────────────────
+function devField(label, value, color) {
+  const c = color ? `color:${color}` : "";
+  return `
+    <div class="dv-field">
+      <div class="dv-label">${label}</div>
+      <div class="dv-value" style="${c}">${value ?? "—"}</div>
+    </div>`;
+}
+
+// ── helper: section header inside a device card ───────────────
+function devSection(title, fields) {
+  return `
+    <div class="dv-section">
+      <div class="dv-section-title">${title}</div>
+      <div class="dv-section-grid">${fields.join("")}</div>
+    </div>`;
+}
+
 function renderDevicesFull() {
   const container = el("devices-full");
   if (!container) return;
@@ -832,43 +974,167 @@ function renderDevicesFull() {
     return;
   }
   container.innerHTML = "";
+
   state.devices.forEach((device) => {
-    const card = document.createElement("div");
-    card.className = "panel";
-    card.style.marginBottom = "12px";
+    // ── All data sourced from DB state only ─────────────────────
+    const hb = state.deviceStats[device.device_id] || {};
     const status = device.status || "offline";
+    const isCam = device.device_type?.includes("cam");
+
+    // Device identity
+    const devName = device.name || device.device_id;
     const lastSeen = device.last_seen
       ? formatDateTime(device.last_seen)
       : "Never";
+    const lastAgo = device.last_seen ? timeAgo(device.last_seen) : "—";
+    const fw = hb.firmware_version || device.firmware_version || "—";
+    const ip = hb.ip_address || device.ip_address || "—";
+    const uptime = hb.uptime_seconds ? formatUptime(hb.uptime_seconds) : "—";
+
+    // Connectivity
+    const rssi = hb.rssi ?? hb.cam_rssi ?? null;
+    const heap = hb.free_heap ? `${Math.round(hb.free_heap / 1024)} KB` : "—";
+    const wsState =
+      hb.ws_connected != null
+        ? hb.ws_connected
+          ? "Connected"
+          : "Disconnected"
+        : "—";
+
+    // Hub data (sensor hub fields from heartbeat)
+    const hubBatV = hb.hub_battery_v ? `${hb.hub_battery_v.toFixed(2)} V` : "—";
+    const hubHeap = hb.hub_free_heap
+      ? `${Math.round(hb.hub_free_heap / 1024)} KB`
+      : "—";
+    const gpsValid =
+      hb.hub_gps_valid != null ? (hb.hub_gps_valid ? "Fix" : "No Fix") : "—";
+    const gpsSats = hb.hub_gps_sats ?? "—";
+    const gsmReady =
+      hb.hub_gsm_ready != null ? (hb.hub_gsm_ready ? "Ready" : "Off") : "—";
+
+    // Latest event for this specific device
+    const latestEv = state.events.find((e) => e.device_id === device.device_id);
     const evCount = state.events.filter(
       (e) => e.device_id === device.device_id,
     ).length;
-    const hb = state.deviceStats[device.device_id];
+
+    // Camera-specific stats
+    const camAlerts = hb.cam_alerts ?? "—";
+    const camUploads =
+      hb.cam_upload_ok != null
+        ? `${hb.cam_upload_ok} OK / ${hb.cam_upload_fail ?? 0} fail`
+        : "—";
+
+    // ── Build card ──────────────────────────────────────────────
+    const card = document.createElement("div");
+    card.className = "dv-card";
+    card.dataset.deviceId = device.device_id;
+
     card.innerHTML = `
-      <div class="panel-header">
-        <span class="panel-title">${device.name || device.device_id}</span>
-        <div class="device-status-pill ${status}">${status}</div>
+      <!-- Card header: device identity + status ──────────────── -->
+      <div class="dv-header">
+        <div class="dv-icon ${isCam ? "cam" : "hub"}">
+          ${
+            isCam
+              ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.9L15 14M4 8h11a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4a2 2 0 012-2z"/></svg>`
+              : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`
+          }
+        </div>
+        <div class="dv-header-info">
+          <div class="dv-name">${devName}</div>
+          <div class="dv-id">${device.device_id} · ${device.device_type || "unknown"}</div>
+        </div>
+        <div class="dv-header-right">
+          ${statusBadge(status)}
+          <div class="dv-last-seen">${lastAgo}</div>
+        </div>
       </div>
-      <div style="padding:16px 18px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:16px">
-        ${[
-          ["Device ID", device.device_id],
-          ["Type", device.device_type || "—"],
-          ["IP Address", device.ip_address || "—"],
-          ["Firmware", device.firmware_version || "—"],
-          ["Last Seen", lastSeen],
-          ["Events", evCount],
-          ["RSSI", hb?.rssi ? `${hb.rssi} dBm` : "—"],
-          [
-            "Heap",
-            hb?.free_heap ? `${Math.round(hb.free_heap / 1024)} KB` : "—",
-          ],
-        ]
-          .map(
-            ([k, v]) =>
-              `<div><div class="stat-label">${k}</div><div style="font-family:var(--font-data);font-size:12px;color:var(--white);margin-top:4px">${v}</div></div>`,
-          )
-          .join("")}
-      </div>`;
+
+      <!-- Sections grid ─────────────────────────────────────── -->
+      <div class="dv-sections">
+
+        ${devSection("Identity", [
+          devField("Device Name", devName),
+          devField("Device ID", device.device_id),
+          devField("Type", device.device_type || "—"),
+          devField("Firmware", fw),
+          devField("IP Address", ip),
+          devField("Last Seen", lastSeen),
+        ])}
+
+        ${devSection("Connectivity", [
+          devField(
+            "Status",
+            status.toUpperCase(),
+            status === "online" ? "var(--green)" : "var(--white-45)",
+          ),
+          devField(
+            "WiFi RSSI",
+            rssi !== null ? `${rssi} dBm` : "—",
+            rssiColor(rssi),
+          ),
+          devField(
+            "WebSocket",
+            wsState,
+            wsState === "Connected" ? "var(--green)" : "var(--white-45)",
+          ),
+          devField("Free Heap", heap),
+          devField("Uptime", uptime),
+        ])}
+
+        ${
+          isCam
+            ? devSection("Camera", [
+                devField(
+                  "Camera State",
+                  hb.cam_alerts != null ? "Active" : "—",
+                ),
+                devField("Alerts", camAlerts),
+                devField("Uploads", camUploads),
+                devField("Events (loaded)", evCount),
+                devField(
+                  "Last Event",
+                  latestEv ? timeAgo(latestEv.created_at) : "—",
+                ),
+                devField("Last Type", latestEv?.snapshot_type || "—"),
+              ])
+            : ""
+        }
+
+        ${devSection("Sensor Hub", [
+          devField(
+            "Battery",
+            hubBatV,
+            hubBatV !== "—" && parseFloat(hubBatV) < 3.5
+              ? "var(--yellow)"
+              : undefined,
+          ),
+          devField("Hub Heap", hubHeap),
+          devField(
+            "GPS",
+            gpsValid,
+            gpsValid === "Fix" ? "var(--green)" : "var(--white-45)",
+          ),
+          devField("Satellites", gpsSats),
+          devField(
+            "GSM",
+            gsmReady,
+            gsmReady === "Ready" ? "var(--green)" : "var(--white-45)",
+          ),
+        ])}
+
+      </div>
+
+      ${
+        latestEv?.snapshot_url
+          ? `
+      <div class="dv-latest-snap">
+        <div class="dv-snap-label">Latest Capture · ${formatDateTime(latestEv.created_at)}</div>
+        <img class="dv-snap-img" src="${latestEv.snapshot_url}" alt="latest capture" loading="lazy">
+      </div>`
+          : ""
+      }`;
+
     container.appendChild(card);
   });
 }
@@ -1070,10 +1336,9 @@ function setupRealtime() {
         );
         if (idx >= 0) state.devices[idx] = device;
         else state.devices.unshift(device);
-        renderDeviceCards();
-        renderStats(); // ← "Devices Online" stat card
-        updateTopbarPills();
-        updateTopbarStatus();
+        debouncedRenderDeviceCards();
+        debouncedRenderStats();
+        debouncedUpdateTopbar();
         if (state.currentView === "devices") renderDevicesFull();
       },
     )
@@ -1100,44 +1365,47 @@ function setupRealtime() {
         const hb = payload.new;
         state.deviceStats[hb.device_id] = hb;
 
-        // Directly update state.devices so UI responds without waiting
-        // for a separate devices-rt event (which depends on RLS).
+        // Always update state.deviceStats with the newest heartbeat (from DB via Realtime).
+        // Then update state.devices to reflect what the DB actually stored —
+        // never merge with stale cached values.
         const devIdx = state.devices.findIndex(
           (d) => d.device_id === hb.device_id,
         );
+        const freshDevice = {
+          device_id: hb.device_id,
+          name: hb.device_id,
+          device_type: hb.device_id?.toLowerCase().includes("cam")
+            ? "esp32_cam"
+            : "sensor",
+          status: "online",
+          last_seen: hb.created_at || new Date().toISOString(),
+          ip_address: hb.ip_address || "—",
+          firmware_version: hb.firmware_version || "—",
+        };
         if (devIdx >= 0) {
-          state.devices[devIdx] = {
-            ...state.devices[devIdx],
-            status: "online",
-            last_seen: hb.created_at || new Date().toISOString(),
-            ip_address: hb.ip_address || state.devices[devIdx].ip_address,
-            firmware_version:
-              hb.firmware_version || state.devices[devIdx].firmware_version,
-          };
+          // Preserve DB-only fields (name, device_type) but update live fields from HB
+          state.devices[devIdx] = { ...state.devices[devIdx], ...freshDevice };
         } else {
-          // First heartbeat from a new device — register it in local state
-          state.devices.unshift({
-            device_id: hb.device_id,
-            name: hb.device_id,
-            device_type: hb.device_id?.toLowerCase().includes("cam")
-              ? "esp32_cam"
-              : "sensor",
-            status: "online",
-            last_seen: hb.created_at || new Date().toISOString(),
-            ip_address: hb.ip_address || "—",
-            firmware_version: hb.firmware_version || "—",
-          });
+          state.devices.unshift(freshDevice);
         }
 
+        // Update GPS state from hub heartbeat fields
         if (hb.hub_gps_sats !== undefined) {
           state.gpsState.satellites = hb.hub_gps_sats;
-          renderGPSBar();
         }
+        if (hb.hub_gps_valid !== undefined) {
+          state.gpsState.valid = !!hb.hub_gps_valid;
+          // If GPS fix just dropped, reflect that immediately
+          if (!hb.hub_gps_valid) {
+            state.gpsState.satellites =
+              hb.hub_gps_sats ?? state.gpsState.satellites;
+          }
+        }
+        renderGPSBar();
 
-        renderDeviceCards();
-        renderStats(); // ← "Devices Online" stat card
-        updateTopbarPills();
-        updateTopbarStatus();
+        debouncedRenderDeviceCards();
+        debouncedRenderStats();
+        debouncedUpdateTopbar();
         if (state.currentView === "devices") renderDevicesFull();
       },
     )
@@ -1239,29 +1507,9 @@ function setupLogExport() {
 }
 
 // ============================================================
-// THEME TOGGLE (dark ↔ light)
-// Persisted to localStorage so the preference survives page reloads.
-// ============================================================
-function setupThemeToggle() {
-  const btn = document.getElementById("theme-toggle");
-  if (!btn) return;
-
-  // Restore saved preference
-  if (localStorage.getItem("sentinel-theme") === "light") {
-    document.body.classList.add("light");
-  }
-
-  btn.addEventListener("click", () => {
-    const isLight = document.body.classList.toggle("light");
-    localStorage.setItem("sentinel-theme", isLight ? "light" : "dark");
-  });
-}
-
-// ============================================================
 // BOOT
 // ============================================================
 async function init() {
-  setupThemeToggle();
   startClock();
   setupNav();
   setupLightbox();
