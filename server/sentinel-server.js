@@ -591,6 +591,7 @@ wss.on("connection", (ws, req) => {
         });
     } else if (msg.type === "ws_heartbeat") {
       // Heartbeat piggybacked on WS — no extra TLS from ESP32.
+      // Upsert ALL live fields so the DB row is always the source of truth.
       const { type: _, ...hb } = msg;
       const devId = hb.device_id || deviceId;
       Promise.all([
@@ -600,10 +601,8 @@ wss.on("connection", (ws, req) => {
             device_id: devId,
             status: "online",
             last_seen: new Date().toISOString(),
-            ip_address: hb.ip_address,
-            firmware_version: hb.firmware_version,
-            free_heap: hb.free_heap,
-            rssi: hb.rssi,
+            ip_address: hb.ip_address || undefined,
+            firmware_version: hb.firmware_version || undefined,
           },
           { onConflict: "device_id" },
         ),
