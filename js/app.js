@@ -402,29 +402,28 @@ function setupSnapshotButton() {
 // so the user can pick which camera to snapshot.
 function buildCameraSelector() {
   document.querySelectorAll(".cam-selector-wrap").forEach((wrap) => {
+    // Hide if only one camera is configured
     if (CAM_DEVICES.length <= 1) {
       wrap.style.display = "none";
       return;
     }
-    const sel = document.createElement("select");
-    sel.className = "cam-selector";
-    sel.title = "Select camera to snapshot";
-    CAM_DEVICES.forEach(({ id, label }) => {
-      const opt = document.createElement("option");
-      opt.value = id;
-      opt.textContent = label;
-      sel.appendChild(opt);
-    });
-    sel.value = snapshotTarget;
-    sel.addEventListener("change", () => {
-      snapshotTarget = sel.value;
-      // Sync all other selectors
-      document.querySelectorAll(".cam-selector").forEach((s) => {
-        s.value = snapshotTarget;
-      });
-    });
     wrap.innerHTML = "";
-    wrap.appendChild(sel);
+    CAM_DEVICES.forEach(({ id, label }) => {
+      const btn = document.createElement("button");
+      btn.className = "cam-btn" + (id === snapshotTarget ? " active" : "");
+      btn.dataset.camId = id;
+      btn.title = `Switch snapshot target to ${label}`;
+      // Camera icon SVG + label
+      btn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/></svg>${label}`;
+      btn.addEventListener("click", () => {
+        snapshotTarget = id;
+        // Update all cam-selector-wrap instances
+        document.querySelectorAll(".cam-btn").forEach((b) => {
+          b.classList.toggle("active", b.dataset.camId === id);
+        });
+      });
+      wrap.appendChild(btn);
+    });
   });
 }
 
@@ -708,7 +707,10 @@ function setPill(id, state, dotColor, text) {
 function updateTopbarStatus() {
   const online = state.devices.filter((d) => d.status === "online").length;
   const total = state.devices.length;
-  setVal("topbar-device-status", `${online}/${total} Devices`);
+  const statusEl = el("topbar-device-status");
+  if (statusEl) {
+    statusEl.textContent = `${online}/${total} Devices`;
+  }
   const dot = el("topbar-device-dot");
   if (dot)
     dot.className =
@@ -1507,9 +1509,47 @@ function setupLogExport() {
 }
 
 // ============================================================
+// THEME TOGGLE AND MOBILE NAV
+// ============================================================
+function setupThemeToggle() {
+  const btn = el("theme-toggle");
+  if (!btn) return;
+
+  if (localStorage.getItem("sentinel-theme") === "light") {
+    document.body.classList.add("light");
+  }
+
+  btn.addEventListener("click", () => {
+    const isLight = document.body.classList.toggle("light");
+    localStorage.setItem("sentinel-theme", isLight ? "light" : "dark");
+  });
+}
+
+function setupMobileMenu() {
+  const toggleBtn = el("mobile-menu-btn");
+  const sidebar = document.querySelector(".sidebar");
+  if (!toggleBtn || !sidebar) return;
+
+  toggleBtn.addEventListener("click", () => {
+    sidebar.classList.toggle("mobile-open");
+  });
+
+  // Close sidebar if a nav item is clicked on mobile
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      if (window.innerWidth <= 768) {
+        sidebar.classList.remove("mobile-open");
+      }
+    });
+  });
+}
+
+// ============================================================
 // BOOT
 // ============================================================
 async function init() {
+  setupThemeToggle();
+  setupMobileMenu();
   startClock();
   setupNav();
   setupLightbox();
