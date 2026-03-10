@@ -591,21 +591,23 @@ wss.on("connection", (ws, req) => {
         });
     } else if (msg.type === "ws_heartbeat") {
       // Heartbeat piggybacked on WS — no extra TLS from ESP32.
-      // Upsert ALL live fields so the DB row is always the source of truth.
       const { type: _, ...hb } = msg;
       const devId = hb.device_id || deviceId;
+
+      // IMPORTANT: only pass columns that exist in the devices table.
+      // heartbeat-only fields (free_heap, rssi, cam_alerts, etc.) go
+      // to the heartbeats table only — NOT to devices.
+      const deviceRow = {
+        device_id: devId,
+        status: "online",
+        last_seen: new Date().toISOString(),
+        ip_address: hb.ip_address || undefined,
+        firmware_version: hb.firmware_version || undefined,
+      };
+
       Promise.all([
         supa.from("heartbeats").insert(hb),
-        supa.from("devices").upsert(
-          {
-            device_id: devId,
-            status: "online",
-            last_seen: new Date().toISOString(),
-            ip_address: hb.ip_address || undefined,
-            firmware_version: hb.firmware_version || undefined,
-          },
-          { onConflict: "device_id" },
-        ),
+        supa.from("devices").upsert(deviceRow, { onConflict: "device_id" }),
       ]).then(([hbRes, devRes]) => {
         if (hbRes.error)
           log("WS", `ws_heartbeat insert error: ${hbRes.error.message}`);
@@ -613,6 +615,11 @@ wss.on("connection", (ws, req) => {
           log(
             "WS",
             `ws_heartbeat device upsert error: ${devRes.error.message}`,
+          );
+        else
+          log(
+            "WS",
+            `HB ${devId}  heap=${hb.free_heap ? Math.round(hb.free_heap / 1024) + "KB" : "?"}  rssi=${hb.rssi ?? "?"}dBm`,
           );
       });
     } else if (msg.type === "ws_hub_heartbeat") {
@@ -861,7 +868,7 @@ server.listen(PORT, HOST, () => {
 
   console.log("");
   console.log(top);
-  console.log(pad("SENTINEL SERVER  v1.2.0"));
+  console.log(pad("SENTINEL SERVER  v1.3.0"));
   console.log(sep);
   console.log(
     pad(`Supabase:  ${SUPABASE_URL.replace("https://", "").slice(0, 46)}`),
