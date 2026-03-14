@@ -15,7 +15,6 @@ window.SENTINEL_CONFIG = {
 
   // ── Device ID ─────────────────────────────────────────────
   CAM_DEVICES: [
-    { id: "ESP32-CAM-01", label: "Camera 1" },
-    { id: "ESP32-CAM-02", label: "Camera 2" },
+    { id: "ESP32-CAM-01", label: "Camera 1" }
   ],
 };

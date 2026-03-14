@@ -279,13 +279,18 @@ function renderStats() {
       e.snapshot_type === "motion",
   ).length;
   const online = state.devices.filter((d) => d.status === "online").length;
+  const recentDevices = state.devices.filter(d => {
+    if (d.status === "online") return true;
+    if (!d.last_seen) return false;
+    return Date.now() - new Date(d.last_seen).getTime() < 86400000;
+  }).length;
   const coords = state.gpsState.latitude
     ? `${state.gpsState.latitude.toFixed(4)}, ${state.gpsState.longitude.toFixed(4)}`
     : "—";
 
   setVal("stat-total", state.totalEvents);
   setVal("stat-today", todayMotion);
-  setVal("stat-devices", `${online}/${state.devices.length}`);
+  setVal("stat-devices", `${online}/${recentDevices}`);
   setVal("stat-last-coords", coords);
 
   const badge = el("alert-badge");
@@ -529,6 +534,7 @@ function updateGPSState(event) {
     state.gpsState.longitude = event.longitude;
     state.gpsState.lastFixTime = event.created_at;
   }
+  if (event.satellites !== undefined) state.gpsState.satellites = event.satellites;
   if (event.distance_cm) state.gpsState.lastDistance = event.distance_cm;
 }
 
@@ -824,7 +830,7 @@ function createDeviceCard(device) {
       }
     </div>
     <div class="device-info">
-      <div class="device-name">${device.name || device.device_id}</div>
+      <div class="device-name">${device.device_id}</div>
       <div class="device-meta">${metaBits} · ${lastSeen}</div>
       ${
         rssi || heap
@@ -984,7 +990,7 @@ function renderDevicesFull() {
     const isCam = device.device_type?.includes("cam");
 
     // Device identity
-    const devName = device.name || device.device_id;
+    const devName = device.device_id;
     const lastSeen = device.last_seen
       ? formatDateTime(device.last_seen)
       : "Never";
@@ -1148,7 +1154,7 @@ function initMap() {
   const mapEl = document.getElementById("map");
   if (!mapEl || typeof L === "undefined") return;
   state.map = L.map("map", { center: [0, 0], zoom: 2 });
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  L.tileLayer("https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", {
     maxZoom: 19,
   }).addTo(state.map);
   renderMapMarkers();
@@ -1159,7 +1165,7 @@ function initFullMap() {
   const mapEl = document.getElementById("map-full");
   if (!mapEl || typeof L === "undefined") return;
   state.fullMap = L.map("map-full", { center: [0, 0], zoom: 2 });
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  L.tileLayer("https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", {
     maxZoom: 19,
   }).addTo(state.fullMap);
   renderFullMapMarkers();

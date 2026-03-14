@@ -11,10 +11,12 @@
 #include <ESPmDNS.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <WiFiManager.h>
 
-#define VERSION   "10.2.3"
-#define HOSTNAME  "esp32cam-sentinel-cam01"
+#define VERSION   "10.8.0"
+#define HOSTNAME  "esp32cam-sentinel"
 #define FLASH_LED 4
+
 
 // ══════════════════════════════════════════════════════════════
 //  ★  DEPLOYMENT MODE  ★
@@ -48,6 +50,7 @@ const char* WIFI_PASS = "&12345@100%";
 
 const char* DEVICE_TOKEN = "";
 const char* DEVICE_ID    = "ESP32-CAM-01";
+
 
 
 // ══════════════ TIMING ═══════════════════════════════════════
@@ -91,8 +94,13 @@ static_assert(sizeof(SensorPacket) == 73,
     "SensorPacket must be 73 bytes — matches Hub. Check deviceId[] size.");
 
 SensorPacket hub;
-volatile bool newPacketReady = false;
-volatile bool captureBusy   = false;
+volatile bool newPacketReady  = false;
+volatile bool captureBusy    = false;
+
+// WS binary upload state ─────────────────────────────────────
+bool          wsUploadPending = false; // waiting for upload_ack
+String        wsUploadCmdId   = "";    // original cmd id for ack
+unsigned long wsUploadSentMs  = 0;     // for timeout detection
 
 // ══════════════ CAMERA PINS (AI-THINKER) ════════════════════
 #define PWDN_GPIO_NUM  32
@@ -131,13 +139,6 @@ unsigned long lastMotionMs   = 0;
 unsigned long lastPeriodicMs = 0;
 
 String pendingCmdId = "";
-
-// ── WebSocket binary upload state ─────────────────────────────
-// Set when a JPEG is sent as a binary WS frame.
-// Cleared when the server sends back an upload_ack, or on 30s timeout.
-bool          wsUploadPending = false;
-String        wsUploadCmdId   = "";
-unsigned long wsUploadSentMs  = 0;
 
 // ══════════════ URL / HTTP HELPERS ═══════════════════════════
 String serverUrl(const char* path) {
@@ -250,17 +251,17 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
             if (deserializeJson(doc, payload, length)) return;
             String msgType = doc["type"] | "";
 
+            // ── upload_ack — binary WS upload confirmed by server ──
             if (msgType == "upload_ack") {
-                // Binary WS upload confirmed by server
                 String status = doc["status"] | "done";
                 bool ok = (status == "done");
                 unsigned long elapsed = millis() - wsUploadSentMs;
-                lg("CAM", "WS upload_ack: " + status + "  " + String(elapsed) + "ms");
+                lg("CAM", "WS ack: " + status + "  " + String(elapsed) + "ms");
                 if (ok) {
-                    sendLog("info","camera","WS upload acked OK "+String(elapsed)+"ms");
+                    sendLog("info","camera","WS upload OK "+String(elapsed)+"ms");
                 } else {
                     uploadFail++;
-                    sendLog("error","camera","WS upload acked FAILED");
+                    sendLog("error","camera","WS upload FAILED by server");
                 }
                 if (wsUploadCmdId.length() > 0) {
                     sendCmdAck(wsUploadCmdId, ok ? "done" : "failed");
@@ -268,6 +269,7 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                 }
                 wsUploadPending = false;
 
+            // ── command — capture / set_quality / set_resolution etc. ──
             } else if (msgType == "command") {
                 String id      = doc["id"]      | "";
                 String command = doc["command"] | "";
@@ -278,30 +280,50 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                         pendingCmdId = id;
                         captureAndUpload("manual", false);
                     } else {
-                        sendLog("warn", "command",
-                            "Capture rejected busy  id=" + id.substring(0,8));
+                        sendLog("warn","command","Capture busy  id="+id.substring(0,8));
                         sendCmdAck(id, "failed");
                     }
                 } else if (command.startsWith("set_quality:")) {
                     int q = constrain(command.substring(12).toInt(), 1, 63);
                     sensor_t* s = esp_camera_sensor_get();
                     if (s) s->set_quality(s, q);
-                    sendLog("info", "command", "Quality=" + String(q));
+                    sendLog("info","command","Quality="+String(q));
                     sendCmdAck(id, "done");
+                } else if (command.startsWith("set_resolution:")) {
+                    // set_resolution:UXGA | SVGA | XGA | HD | VGA
+                    String res = command.substring(15);
+                    res.trim();
+                    sensor_t* s = esp_camera_sensor_get();
+                    if (s) {
+                        framesize_t fs = FRAMESIZE_UXGA;
+                        if      (res == "UXGA") fs = FRAMESIZE_UXGA;
+                        else if (res == "SXGA") fs = FRAMESIZE_SXGA;
+                        else if (res == "XGA" ) fs = FRAMESIZE_XGA;
+                        else if (res == "HD"  ) fs = FRAMESIZE_HD;
+                        else if (res == "SVGA") fs = FRAMESIZE_SVGA;
+                        else if (res == "VGA" ) fs = FRAMESIZE_VGA;
+                        s->set_framesize(s, fs);
+                        sendLog("info","command","Resolution="+res);
+                        sendCmdAck(id, "done");
+                    } else {
+                        sendCmdAck(id, "failed");
+                    }
                 } else if (command.startsWith("set_brightness:")) {
                     int b = constrain(command.substring(15).toInt(), -2, 2);
                     sensor_t* s = esp_camera_sensor_get();
                     if (s) s->set_brightness(s, b);
-                    sendLog("info", "command", "Brightness=" + String(b));
+                    sendLog("info","command","Brightness="+String(b));
                     sendCmdAck(id, "done");
                 } else if (command == "reboot") {
-                    sendLog("warn", "command", "Reboot commanded");
+                    sendLog("warn","command","Reboot commanded");
                     sendCmdAck(id, "done");
                     delay(300); ESP.restart();
                 } else {
-                    sendLog("warn", "command", "Unknown: " + command);
+                    sendLog("warn","command","Unknown: "+command);
                     sendCmdAck(id, "failed");
                 }
+
+            // ── ping — keep-alive ──────────────────────────────────
             } else if (msgType == "ping") {
                 wsSend("{\"type\":\"pong\"}");
             }
@@ -435,11 +457,14 @@ void handleSensorPacket(unsigned long now) {
 //  This function opens the TLS socket directly, writes the HTTP
 //  request headers manually, then streams the body in 4KB blocks.
 //  Returns the HTTP response code, or -1 on connection failure.
-static const size_t STREAM_CHUNK = 1024;
+// ══════════════════════════════════════════════════════════════
+static const size_t STREAM_CHUNK = 4096;
 
 int streamUpload(const String& boundary, const String& header,
                  const uint8_t* imgBuf, size_t imgLen,
-                 const String& footer) {
+                 const String& footer, int retryCount = 0) {
+    // Retry up to 2 times on connect or stall failure.
+    // HTTP error codes (4xx/5xx) are not retried.
 
     size_t totalBody = header.length() + imgLen + footer.length();
 
@@ -507,6 +532,12 @@ int streamUpload(const String& boundary, const String& header,
     }
 
     client.stop();
+    // Retry on network failure (not on HTTP 4xx/5xx)
+    if ((httpCode == -1 || httpCode == -3) && retryCount < 2) {
+        lg("CAM", "streamUpload retry " + String(retryCount+1) + "/2");
+        delay(500 * (retryCount + 1));   // back-off: 500ms, 1000ms
+        return streamUpload(boundary, header, imgBuf, imgLen, footer, retryCount + 1);
+    }
     return httpCode;
 }
 
@@ -583,6 +614,60 @@ bool uploadViaWebSocket(const uint8_t* imgBuf, size_t imgLen,
     return sent;
 }
 
+
+// ═══════════════════════════════════════════════════════════════
+//  CAMERA RECOVERY
+//  Called when esp_camera_fb_get() returns NULL.
+//  Deinits and reinitialises the camera driver.
+//  Returns true if recovery succeeded.
+// ═══════════════════════════════════════════════════════════════
+bool camReinit() {
+    lg("CAM", "Recovery: deinit");
+    esp_camera_deinit();
+    delay(300);
+    camReady = false;
+
+    camera_config_t cfg;
+    cfg.ledc_channel=LEDC_CHANNEL_0; cfg.ledc_timer=LEDC_TIMER_0;
+    cfg.pin_d0=Y2_GPIO_NUM; cfg.pin_d1=Y3_GPIO_NUM;
+    cfg.pin_d2=Y4_GPIO_NUM; cfg.pin_d3=Y5_GPIO_NUM;
+    cfg.pin_d4=Y6_GPIO_NUM; cfg.pin_d5=Y7_GPIO_NUM;
+    cfg.pin_d6=Y8_GPIO_NUM; cfg.pin_d7=Y9_GPIO_NUM;
+    cfg.pin_xclk=XCLK_GPIO_NUM;  cfg.pin_pclk=PCLK_GPIO_NUM;
+    cfg.pin_vsync=VSYNC_GPIO_NUM; cfg.pin_href=HREF_GPIO_NUM;
+    cfg.pin_sscb_sda=SIOD_GPIO_NUM; cfg.pin_sscb_scl=SIOC_GPIO_NUM;
+    cfg.pin_pwdn=PWDN_GPIO_NUM;  cfg.pin_reset=RESET_GPIO_NUM;
+    cfg.xclk_freq_hz=20000000;
+    cfg.pixel_format=PIXFORMAT_JPEG;
+    if (psramFound()) {
+        cfg.frame_size=FRAMESIZE_UXGA; cfg.jpeg_quality=10; cfg.fb_count=2;
+    } else {
+        cfg.frame_size=FRAMESIZE_XGA;  cfg.jpeg_quality=15; cfg.fb_count=1;
+    }
+    if (esp_camera_init(&cfg) != ESP_OK) {
+        lg("CAM", "Recovery: FAILED — camera offline");
+        return false;
+    }
+    // Re-apply sensor tuning
+    sensor_t* s = esp_camera_sensor_get();
+    if (s) {
+        s->set_brightness(s,0);  s->set_contrast(s,1);
+        s->set_saturation(s,0);  s->set_sharpness(s,1);
+        s->set_whitebal(s,1);    s->set_awb_gain(s,1);
+        s->set_wb_mode(s,0);     s->set_exposure_ctrl(s,1);
+        s->set_aec2(s,1);        s->set_ae_level(s,0);
+        s->set_aec_value(s,300); s->set_gain_ctrl(s,1);
+        s->set_agc_gain(s,0);    s->set_gainceiling(s,(gainceiling_t)6);
+        s->set_bpc(s,1);         s->set_wpc(s,1);
+        s->set_raw_gma(s,1);     s->set_lenc(s,1);
+        s->set_hmirror(s,0);     s->set_vflip(s,0);
+        s->set_dcw(s,1);
+    }
+    camReady = true;
+    lg("CAM", "Recovery: OK");
+    return true;
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  CAPTURE + UPLOAD
 // ═══════════════════════════════════════════════════════════════
@@ -590,15 +675,31 @@ void captureAndUpload(const char* snapType, bool fastCapture) {
     if (!camReady || !wifiReady || captureBusy) return;
     captureBusy = true;
 
-    // Flush stale frames
-    { camera_fb_t* f1=esp_camera_fb_get(); if(f1) esp_camera_fb_return(f1);
-      camera_fb_t* f2=esp_camera_fb_get(); if(f2) esp_camera_fb_return(f2);
-      if (!fastCapture) delay(150); }
+    // Flush stale frames — flush exactly fb_count frames so the
+    // driver can refill with a fresh exposure.
+    // UXGA needs 300ms for a clean frame; 150ms caused NULL returns.
+    for (int fi = 0; fi < 2; fi++) {
+        camera_fb_t* stale = esp_camera_fb_get();
+        if (stale) esp_camera_fb_return(stale);
+    }
+    if (!fastCapture) delay(300);   // 300ms — enough for UXGA re-expose
 
     unsigned long t0 = millis();
     camera_fb_t* fb  = esp_camera_fb_get();
+
+    // Recovery: if grab fails, try one deinit/reinit cycle
     if (!fb) {
-        sendLog("error","camera","Frame grab failed ("+String(snapType)+")");
+        lg("CAM", "Frame grab NULL — heap=" + String(ESP.getFreeHeap()/1024)
+            + "KB  psram=" + String(ESP.getFreePsram()/1024) + "KB");
+        sendLog("warn","camera","Frame grab NULL — attempting recovery");
+        if (camReinit()) {
+            delay(500);
+            fb = esp_camera_fb_get();   // one retry after reinit
+        }
+    }
+
+    if (!fb) {
+        sendLog("error","camera","Frame grab failed after recovery ("+String(snapType)+")");
         captureBusy = false;
         if (pendingCmdId.length()>0){sendCmdAck(pendingCmdId,"failed");pendingCmdId="";}
         return;
@@ -664,6 +765,7 @@ void captureAndUpload(const char* snapType, bool fastCapture) {
 
     if (wsConnected) {
         bool sent = uploadViaWebSocket(imgBuf, imgLen, snapType, pendingCmdId);
+        free(imgBuf);
         if (sent) {
             usedWS = true;
             // Ack and busy-release happen asynchronously in upload_ack handler.
@@ -674,7 +776,6 @@ void captureAndUpload(const char* snapType, bool fastCapture) {
             pendingCmdId    = "";
             captureBusy     = false;
             uploadOK++;
-            free(imgBuf); // <--- FREE HERE ONLY IF WS SUCCEEDED
             return;  // ack arrives via webSocketEvent upload_ack
         }
         // sendBIN failed — fall through to HTTP
@@ -812,7 +913,12 @@ void initWebSocket() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  CAMERA INIT — UXGA Q10 fixed forever
+//  CAMERA INIT
+//  PSRAM:    UXGA (1600×1200) Q10 — reliable ceiling for OV2640
+//  No PSRAM: XGA  (1024×768)  Q15
+//
+//  ⚠  Q6 causes DMA buffer overflow at UXGA → fb_get returns NULL.
+//     Q10 is the sweet spot: visibly sharp, always succeeds.
 // ═══════════════════════════════════════════════════════════════
 void initCamera() {
     camera_config_t cfg;
@@ -828,13 +934,15 @@ void initCamera() {
     cfg.xclk_freq_hz=20000000;
     cfg.pixel_format=PIXFORMAT_JPEG;
     if (psramFound()) {
-        // Lowered to SVGA (800x600) Q10 to prevent 331KB giant frames.
-        // Large frames cause TLS allocation failures and WS sendBIN lockups.
-        cfg.frame_size=FRAMESIZE_SVGA; cfg.jpeg_quality=10; cfg.fb_count=2;
-        lg("CAM","PSRAM — SVGA Q10 fb=2");
+        // UXGA (1600x1200) Q10 in all modes.
+        // streamUpload() sends in 4KB chunks — file size is not a limit.
+        // Q10 is the reliable ceiling for OV2640 at UXGA.
+        // Q6 causes DMA buffer overflow → esp_camera_fb_get() returns NULL.
+        cfg.frame_size=FRAMESIZE_UXGA; cfg.jpeg_quality=10; cfg.fb_count=2;
+        lg("CAM","PSRAM — UXGA Q10 fb=2");
     } else {
-        cfg.frame_size=FRAMESIZE_SVGA; cfg.jpeg_quality=12; cfg.fb_count=1;
-        lg("CAM","No PSRAM — SVGA Q12 fb=1");
+        cfg.frame_size=FRAMESIZE_XGA;  cfg.jpeg_quality=15; cfg.fb_count=1;
+        lg("CAM","No PSRAM — XGA Q15 fb=1");
     }
     if (esp_camera_init(&cfg)!=ESP_OK) { lg("CAM","Init FAILED"); camReady=false; return; }
     sensor_t* s = esp_camera_sensor_get();
@@ -850,27 +958,48 @@ void initCamera() {
     s->set_hmirror(s,0);     s->set_vflip(s,0);
     s->set_dcw(s,1);
     camReady=true;
-lg("CAM", psramFound() ? "Ready — UXGA Q6" : "Ready — SVGA Q12");
+lg("CAM", psramFound() ? "Ready — UXGA Q10" : "Ready — XGA Q15");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  WIFI
 // ═══════════════════════════════════════════════════════════════
 void initWiFi() {
+    // ── Phase 1: STA connection via WiFiManager ──────────────────
+    // First boot: CAM creates AP "ESP32CAM-SENTINEL", user visits
+    // 192.168.4.1 and enters WiFi password once. Saved to flash.
+    // Subsequent boots connect automatically — no portal shown.
+    WiFiManager wm;
+    wm.setConfigPortalTimeout(180);
+    wm.setConnectTimeout(20);
+    wm.setTitle("SENTINEL CAM Setup");
+
+    Serial.println(F("[WIFI] Starting WiFiManager..."));
+    Serial.println(F("[WIFI] First boot? Connect to 'ESP32CAM-SENTINEL' → 192.168.4.1"));
+
+    // autoConnect: if saved creds work, connects silently.
+    // If not, opens portal on "ESP32CAM-SENTINEL" / "sentinel123".
+    bool ok = wm.autoConnect("ESP32CAM-SENTINEL", "sentinel123");
+
+    if (ok) {
+        wifiReady = true;
+        lastWifiOkMs = millis();
+        wifiChannel  = WiFi.channel();
+        lg("WIFI","IP="+WiFi.localIP().toString()+" Ch="+String(wifiChannel)+" RSSI="+String(WiFi.RSSI())+"dBm");
+    } else {
+        lg("WIFI","Portal timed out — no STA connection");
+        wifiChannel = 6;   // fallback channel for ESP-NOW
+    }
+
+    // ── Phase 2: AP for ESP-NOW + local web access ───────────────
+    // SoftAP must be on the same channel as the STA connection so
+    // ESP-NOW (which binds to the AP MAC) is reachable by the Hub.
     WiFi.mode(WIFI_AP_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    WiFi.softAP("ESP32CAM-SENTINEL", "sentinel123", wifiChannel);
+    lg("WIFI","SoftAP Ch."+String(wifiChannel));
+
     WiFi.setSleep(false);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    Serial.print("[WIFI] Connecting");
-    int tries=0;
-    while (WiFi.status()!=WL_CONNECTED && tries++<40) { delay(500); Serial.print('.'); }
-    Serial.println();
-    if (WiFi.status()==WL_CONNECTED) {
-        wifiReady=true; lastWifiOkMs=millis(); wifiChannel=WiFi.channel();
-        lg("WIFI","IP="+WiFi.localIP().toString()+" Ch="+String(wifiChannel)+" RSSI="+String(WiFi.RSSI())+"dBm");
-    } else { lg("WIFI","FAILED — Ch=1 fallback"); wifiChannel=1; }
-    WiFi.softAP("ESP32CAM-SENTINEL","sentinel123",wifiChannel);
-    lg("WIFI","SoftAP Ch."+String(wifiChannel));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -903,6 +1032,12 @@ void startWebServer() {
         d["alertCount"]=alertCount; d["uploadOK"]=uploadOK; d["uploadFail"]=uploadFail;
         d["freeHeap"]=ESP.getFreeHeap(); d["uptime"]=millis()/1000;
         d["rssi"]=WiFi.RSSI(); d["pktSize"]=(int)sizeof(SensorPacket);
+        // ap_mac — used by Sensor Hub auto-discovery (no hardcoded MAC needed)
+        uint8_t mac[6]; esp_wifi_get_mac(WIFI_IF_AP, mac);
+        char macStr[18];
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
+        d["ap_mac"] = macStr;
         String out; serializeJson(d,out);
         web.send(200,"application/json",out);
     });
