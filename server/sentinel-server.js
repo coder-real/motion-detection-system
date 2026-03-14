@@ -1,6 +1,6 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
- * ║  SENTINEL SERVER  v1.3.0                                    ║
+ * ║  SENTINEL SERVER  v1.4.0                                    ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║                                                              ║
  * ║  WHY THIS EXISTS                                             ║
@@ -336,6 +336,27 @@ app.post("/log", authGuard, async (req, res) => {
 app.get("/ping", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // ─────────────────────────────────────────────────────────────────
+//  GET /devices — shows exactly which device IDs are currently
+//  connected via WebSocket. Use this to diagnose routing issues.
+//  If a device is missing here, commands to it will immediately fail.
+// ─────────────────────────────────────────────────────────────────
+app.get("/devices", (_req, res) => {
+  const list = [];
+  deviceSockets.forEach((ws, id) => {
+    list.push({
+      device_id: id,
+      connected: ws.readyState === WebSocket.OPEN,
+      readyState: ws.readyState,
+    });
+  });
+  res.json({
+    count: list.length,
+    devices: list,
+    ts: new Date().toISOString(),
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
 //  GET /health  — lightweight ping
 // ─────────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => {
@@ -346,7 +367,7 @@ app.get("/health", (_req, res) => {
   });
   res.json({
     status: "ok",
-    version: "1.2.0",
+    version: "1.4.0",
     uptime: Math.floor(process.uptime()),
     devices: devStatus,
     devicesConnected: deviceSockets.size,
@@ -690,10 +711,18 @@ async function pushCommandToESP32(cmd) {
   // Route to the correct device socket
   const targetSocket = deviceSockets.get(device_id);
   if (!targetSocket || targetSocket.readyState !== WebSocket.OPEN) {
-    const connected = [...deviceSockets.keys()].join(", ") || "none";
+    const connectedIds =
+      [...deviceSockets.entries()]
+        .map(
+          ([id, ws]) =>
+            `${id}(${ws.readyState === WebSocket.OPEN ? "OPEN" : "CLOSED"})`,
+        )
+        .join(", ") || "none";
+    log("CMD", `⚠ ${device_id} NOT in socket map`);
+    log("CMD", `  Currently connected: ${connectedIds}`);
     log(
       "CMD",
-      `${device_id} not connected (connected: ${connected}) — id=${id.slice(0, 8)} failed`,
+      `  Tip: device_id in command must exactly match deviceId sent in hello`,
     );
     metrics.commands.ackFailed++;
     await supa.from("commands").update({ status: "failed" }).eq("id", id);
@@ -702,7 +731,7 @@ async function pushCommandToESP32(cmd) {
 
   metrics.commands.pushed++;
   targetSocket.send(JSON.stringify({ type: "command", id, command }));
-  log("CMD", `→ ${device_id}: ${command}  id=${id.slice(0, 8)}`);
+  log("CMD", `→ ${device_id}: ${command}  id=${id.slice(0, 8)}  socket=OPEN`);
 
   // Wait for ack with timeout
   await new Promise((resolve) => {
@@ -868,7 +897,7 @@ server.listen(PORT, HOST, () => {
 
   console.log("");
   console.log(top);
-  console.log(pad("SENTINEL SERVER  v1.3.0"));
+  console.log(pad("SENTINEL SERVER  v1.4.0"));
   console.log(sep);
   console.log(
     pad(`Supabase:  ${SUPABASE_URL.replace("https://", "").slice(0, 46)}`),
