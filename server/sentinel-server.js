@@ -1,6 +1,6 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
- * ║  SENTINEL SERVER  v1.4.0                                    ║
+ * ║  SENTINEL SERVER  v1.4.1                                    ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║                                                              ║
  * ║  WHY THIS EXISTS                                             ║
@@ -367,7 +367,7 @@ app.get("/health", (_req, res) => {
   });
   res.json({
     status: "ok",
-    version: "1.4.0",
+    version: "1.4.1",
     uptime: Math.floor(process.uptime()),
     devices: devStatus,
     devicesConnected: deviceSockets.size,
@@ -618,8 +618,14 @@ wss.on("connection", (ws, req) => {
       // IMPORTANT: only pass columns that exist in the devices table.
       // heartbeat-only fields (free_heap, rssi, cam_alerts, etc.) go
       // to the heartbeats table only — NOT to devices.
+      // Infer device_type from device_id so new rows satisfy NOT NULL constraint.
+      // Existing rows are updated (ON CONFLICT), so existing device_type is preserved.
+      const inferredType = devId.toLowerCase().includes("cam")
+        ? "esp32_cam"
+        : "sensor";
       const deviceRow = {
         device_id: devId,
+        device_type: inferredType,
         status: "online",
         last_seen: new Date().toISOString(),
         ip_address: hb.ip_address || undefined,
@@ -897,7 +903,7 @@ server.listen(PORT, HOST, () => {
 
   console.log("");
   console.log(top);
-  console.log(pad("SENTINEL SERVER  v1.4.0"));
+  console.log(pad("SENTINEL SERVER  v1.4.1"));
   console.log(sep);
   console.log(
     pad(`Supabase:  ${SUPABASE_URL.replace("https://", "").slice(0, 46)}`),
