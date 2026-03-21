@@ -609,10 +609,10 @@ function renderGPSBar() {
       "fix-good": "green",
       "fix-weak": "orange",
       "fix-search": "yellow",
-      "fix-none": "red",
+      "fix-none": "grey",
     }[cls] || "grey";
   const pillState =
-    cls === "fix-none" ? "error" : cls === "fix-search" ? "warn" : "online";
+    cls === "fix-none" ? "offline" : cls === "fix-search" ? "warn" : "online";
   setPill(
     "pill-gps",
     pillState,
@@ -685,19 +685,36 @@ function updateTopbarPills() {
     (hb) => hb.hub_gsm_csq !== undefined,
   );
   const gsmCsq = hubHB?.hub_gsm_csq;
-  const gsmReady = gsmCsq != null && gsmCsq > 0;
-  const gsmLabel =
-    gsmCsq != null
-      ? `CSQ ${gsmCsq}`
-      : state.events.some((e) => e.sms_sent)
-        ? "Ready"
-        : "Unknown";
-  setPill(
-    "pill-gsm",
-    gsmReady ? "online" : "offline",
-    gsmReady ? "green" : "grey",
-    gsmLabel,
-  );
+  
+  let gsmState = "offline";
+  let gsmColor = "grey";
+  let gsmLabel = "Unknown";
+
+  if (gsmCsq != null) {
+    if (gsmCsq === 99 || gsmCsq === 0) {
+      gsmState = "offline";
+      gsmColor = "grey";
+      gsmLabel = gsmCsq === 99 ? "No Signal" : "CSQ 0";
+    } else if (gsmCsq < 10) {
+      gsmState = "warn";
+      gsmColor = "orange";
+      gsmLabel = `CSQ ${gsmCsq} (Weak)`;
+    } else if (gsmCsq < 15) {
+      gsmState = "online";
+      gsmColor = "yellow";
+      gsmLabel = `CSQ ${gsmCsq} (OK)`;
+    } else {
+      gsmState = "online";
+      gsmColor = "green";
+      gsmLabel = `CSQ ${gsmCsq} (Good)`;
+    }
+  } else if (state.events.some((e) => e.sms_sent)) {
+    gsmState = "online";
+    gsmColor = "green";
+    gsmLabel = "Ready";
+  }
+
+  setPill("pill-gsm", gsmState, gsmColor, gsmLabel);
 }
 
 function setPill(id, state, dotColor, text) {
@@ -1342,8 +1359,11 @@ function setupRealtime() {
         const idx = state.devices.findIndex(
           (d) => d.device_id === device.device_id,
         );
-        if (idx >= 0) state.devices[idx] = device;
-        else state.devices.unshift(device);
+        if (idx >= 0) {
+          state.devices[idx] = { ...state.devices[idx], ...device };
+        } else {
+          state.devices.unshift(device);
+        }
         debouncedRenderDeviceCards();
         debouncedRenderStats();
         debouncedUpdateTopbar();
@@ -1515,6 +1535,41 @@ function setupLogExport() {
 }
 
 // ============================================================
+// CSV EXPORT (SNAPSHOTS)
+// ============================================================
+function setupCsvExport() {
+  el("btn-export-csv")?.addEventListener("click", () => {
+    // We only export events that have snapshot_url OR triggered_by
+    const rows = [
+      ["Timestamp", "Device ID", "Trigger", "Type", "Lat", "Lng", "Distance[cm]", "Satellites", "RSSI[dBm]", "Image URL"]
+    ];
+    state.events.forEach(e => {
+      rows.push([
+        new Date(e.created_at).toISOString(),
+        e.device_id || "",
+        (e.triggered_by || "unknown").toUpperCase(),
+        e.snapshot_type || "motion",
+        e.latitude || "",
+        e.longitude || "",
+        e.distance_cm || "",
+        e.satellites || "",
+        e.cam_rssi || "",
+        e.snapshot_url || ""
+      ]);
+    });
+    
+    // Convert to CSV
+    const csvContent = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `sentinel_snapshots_${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+}
+
+// ============================================================
 // THEME TOGGLE AND MOBILE NAV
 // ============================================================
 function setupThemeToggle() {
@@ -1561,6 +1616,7 @@ async function init() {
   setupLightbox();
   setupGalleryFilters();
   setupLogExport();
+  setupCsvExport();
   await loadInitialData();
   setupRealtime();
   initMap();

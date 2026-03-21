@@ -9,7 +9,7 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 
-#define FW_VERSION  "4.6.0"
+#define FW_VERSION  "4.6.2"
 
 // ══════════════ PINS ═══════════════════════════════════════
 #define PIR_PIN         25
@@ -75,7 +75,7 @@ TinyGPSPlus    gps;
 Preferences    prefs;
 
 // ══════════════ STATE ════════════════════════════════════════
-char     deviceId[12]    = "UNIT_001";
+char     deviceId[12]    = "UNIT_002";
 char     phoneNumber[20] = "+2348129018208";
 uint32_t alertCount      = 0;
 uint32_t cooldownMs      = COOLDOWN_DEFAULT_MS;
@@ -88,7 +88,7 @@ unsigned long pirDebounceStart = 0;
 bool          pirArmed         = false;
 
 bool    gsmReady = false, espnowReady = false, gpsHasFix = false;
-char    camIpHint[16] = "";
+char    camIpHint[20] = "esp32cam-sentinel-2";
 int8_t  gsmCSQ   = 99;
 
 struct GPSCache {
@@ -109,7 +109,7 @@ void setup() {
     Serial.begin(115200);
     delay(600);
     Serial.println(F("\n╔════════════════════════════════════════╗"));
-    Serial.println(F("║  ESP32 SENSOR HUB v4.6.0               ║"));
+    Serial.println(F("║  ESP32 SENSOR HUB v4.6.1               ║"));
     Serial.println(F("║  WiFiManager + Fast Subnet Discovery    ║"));
     Serial.println(F("╚════════════════════════════════════════╝\n"));
 
@@ -187,20 +187,32 @@ void connectWiFi() {
     wm.setConnectTimeout(20);
     wm.setTitle("SENTINEL Hub Setup");
 
+    // ── Pre-fill all fields from saved Preferences ────────────
     prefs.begin("cfg", false);
-    String savedIp = prefs.getString("camIp", "");
+    String savedIp  = prefs.getString("camIp", "");
+    String savedId  = prefs.getString("deviceId", "UNIT_002");
+    String savedPh  = prefs.getString("phone", "+2348129018208");
+    String savedCd  = String(prefs.getUInt("cooldown", COOLDOWN_DEFAULT_MS));
     prefs.end();
     savedIp.toCharArray(camIpHint, sizeof(camIpHint));
 
-    WiFiManagerParameter camIpParam(
-        "camip",
-        "CAM IP (optional — leave blank to auto-scan)",
-        camIpHint, 15
-    );
-    wm.addParameter(&camIpParam);
+    // ── Custom portal fields ───────────────────────────────────
+    WiFiManagerParameter camIpParam (
+        "camip",  "CAM IP (leave blank to auto-scan)", camIpHint, 15);
+    WiFiManagerParameter idParam(
+        "devid",  "Device ID (max 11 chars)",          savedId.c_str(), 11);
+    WiFiManagerParameter phoneParam(
+        "phone",  "SMS phone number (+country code)",  savedPh.c_str(), 19);
+    WiFiManagerParameter cdParam(
+        "cd",     "Motion cooldown (ms)",              savedCd.c_str(), 8);
 
-    Serial.println(F("[WIFI] First boot? Connect phone to 'SENTINEL-HUB' → 192.168.4.1"));
-    Serial.println(F("[WIFI] Enter your WiFi password (same network as the CAM)."));
+    wm.addParameter(&camIpParam);
+    wm.addParameter(&idParam);
+    wm.addParameter(&phoneParam);
+    wm.addParameter(&cdParam);
+
+    Serial.println(F("[WIFI] To change settings: run CLEARWIFI, connect to"));
+    Serial.println(F("[WIFI] 'SENTINEL-HUB' AP → visit 192.168.4.1"));
 
     bool connected = wm.autoConnect("SENTINEL-HUB", "sentinel123");
 
@@ -210,17 +222,44 @@ void connectWiFi() {
             + " Ch=" + String(WiFi.channel())
             + " RSSI=" + String(WiFi.RSSI()) + "dBm");
 
-        String enteredIp = String(camIpParam.getValue());
-        enteredIp.trim();
+        prefs.begin("cfg", false);
+
+        // CAM IP hint
+        String enteredIp = String(camIpParam.getValue()); enteredIp.trim();
         if (enteredIp.length() >= 7) {
             enteredIp.toCharArray(camIpHint, sizeof(camIpHint));
-            prefs.begin("cfg", false);
             prefs.putString("camIp", enteredIp);
-            prefs.end();
-            lg("WIFI", "CAM IP hint saved: " + enteredIp);
+            lg("WIFI", "CAM IP: " + enteredIp);
         }
+
+        // Device ID
+        String enteredId = String(idParam.getValue()); enteredId.trim();
+        if (enteredId.length() > 0 && enteredId != savedId) {
+            enteredId.toCharArray(deviceId, sizeof(deviceId));
+            prefs.putString("deviceId", enteredId);
+            lg("CFG", "Device ID → " + enteredId);
+        }
+
+        // Phone number
+        String enteredPh = String(phoneParam.getValue()); enteredPh.trim();
+        if (enteredPh.length() > 0 && enteredPh != savedPh) {
+            enteredPh.toCharArray(phoneNumber, sizeof(phoneNumber));
+            prefs.putString("phone", enteredPh);
+            lg("CFG", "Phone → " + enteredPh);
+        }
+
+        // Cooldown
+        String enteredCd = String(cdParam.getValue()); enteredCd.trim();
+        uint32_t newCd = enteredCd.toInt();
+        if (newCd >= 1000 && newCd != cooldownMs) {
+            cooldownMs = newCd;
+            prefs.putUInt("cooldown", cooldownMs);
+            lg("CFG", "Cooldown → " + String(cooldownMs) + "ms");
+        }
+
+        prefs.end();
     } else {
-        lg("WIFI", "Portal timed out — using saved channel");
+        lg("WIFI", "Portal timed out — using saved settings");
         prefs.begin("cfg", false);
         espnowChannel = prefs.getInt("channel", 6);
         prefs.end();
@@ -295,9 +334,9 @@ void discoverCamMac() {
     }
 
     // ── Layer 2: mDNS ────────────────────────────────────────
-    lg("DISC", "Trying mDNS (esp32cam-sentinel.local)...");
+    lg("DISC", "Trying mDNS (esp32cam-sentinel-2)...");
     MDNS.begin("sentinel-hub");
-    IPAddress mIP = MDNS.queryHost("esp32cam-sentinel", MDNS_TIMEOUT_MS);
+    IPAddress mIP = MDNS.queryHost("esp32cam-sentinel-2", MDNS_TIMEOUT_MS);
     if (mIP != INADDR_NONE) {
         lg("DISC", "mDNS → " + mIP.toString());
         if (tryFetchMac(mIP.toString())) return;
@@ -583,12 +622,45 @@ float readBattery() {
 
 // ══════════════════════════════════════════════════════════════
 //  GSM
+//
+//  The SIM800L generates "OVER-VOLTAGE POWER DOWN" when Vcc
+//  exceeds ~4.4V and resets itself. After reset the module
+//  loses its AT session but gsmReady stays true in firmware.
+//
+//  Fix: probeGSM() sends a quick AT ping before every SMS.
+//  If the module doesn't respond (post-reset), it re-runs the
+//  full init sequence. SMS is only attempted after confirmed OK.
+//
+//  Hardware note: power SIM800L from a dedicated 3.7–4.2V LiPo
+//  or an LDO regulator (e.g. AMS1117-3.8). Do NOT feed 5V
+//  directly — the module will OVER-VOLTAGE and reset mid-send.
 // ══════════════════════════════════════════════════════════════
+
+// Probe the module and re-init if it reset since last contact.
+// Returns true if module is alive and ready.
+bool probeGSM() {
+    // Flush anything the module printed (OVER-VOLTAGE messages etc.)
+    while (gsmSerial.available()) gsmSerial.read();
+
+    gsmSerial.println(F("AT"));
+    unsigned long t = millis(); String r = "";
+    while (millis()-t < 2000) {
+        while (gsmSerial.available()) r += (char)gsmSerial.read();
+    }
+    if (r.indexOf("OK") >= 0) return true;   // alive
+
+    // Module didn't respond — it reset. Re-initialise.
+    lg("GSM", "Module offline (OVER-VOLTAGE reset?) — re-initialising");
+    gsmReady = false;
+    initGSMQuick();
+    return gsmReady;
+}
+
 void initGSMQuick() {
     for (int i=0;i<4;i++) {
         gsmSerial.println(F("AT"));
         unsigned long t=millis(); String r="";
-        while (millis()-t<1500){while(gsmSerial.available())r+=(char)gsmSerial.read();}
+        while (millis()-t<2000){while(gsmSerial.available())r+=(char)gsmSerial.read();}
         if (r.indexOf("OK")>=0) {
             gsmSerial.println(F("ATE0")); delay(150); gsmSerial.readString();
             gsmSerial.println(F("AT+CMGF=1")); delay(150); gsmSerial.readString();
@@ -598,17 +670,31 @@ void initGSMQuick() {
             if (idx>=0) gsmCSQ=cr.substring(idx+5,idx+8).toInt();
             gsmReady=true; lg("GSM","Ready CSQ="+String(gsmCSQ)); return;
         }
-        delay(500);
+        delay(800);
     }
     lg("GSM","Not available");
 }
 
 bool sendSMS() {
-    gsmSerial.println(F("AT+CMGF=1")); delay(250); gsmSerial.readString();
+    // Probe first — detect post-OVER-VOLTAGE reset silently
+    if (!probeGSM()) {
+        lg("GSM", "SMS skipped — module not responding after probe");
+        return false;
+    }
+
+    // Set text mode and send
+    gsmSerial.println(F("AT+CMGF=1")); delay(300); gsmSerial.readString();
     gsmSerial.print(F("AT+CMGS=\"")); gsmSerial.print(phoneNumber); gsmSerial.println(F("\""));
+
+    // Wait up to 4s for '>' prompt (module can be slow after OVER-VOLTAGE recovery)
     unsigned long t=millis(); String prompt="";
-    while (millis()-t<1500){while(gsmSerial.available())prompt+=(char)gsmSerial.read();}
-    if (prompt.indexOf('>')<0) return false;
+    while (millis()-t < 4000) { while(gsmSerial.available()) prompt+=(char)gsmSerial.read(); }
+    if (prompt.indexOf('>') < 0) {
+        lg("GSM", "No prompt — module may have reset again");
+        gsmReady = false;   // force re-probe on next alert
+        return false;
+    }
+
     gsmSerial.print(F("ALERT #")); gsmSerial.print(alertCount);
     gsmSerial.print(F(" [")); gsmSerial.print(deviceId); gsmSerial.print(F("]"));
     if (gC.valid){
@@ -617,8 +703,17 @@ bool sendSMS() {
     }
     gsmSerial.print(F(" Dist:")); gsmSerial.print(pkt.distance_cm,0);
     gsmSerial.print(F("cm Bat:")); gsmSerial.print(pkt.batteryVoltage,1); gsmSerial.print('V');
-    gsmSerial.write(26); delay(3000);
-    return gsmSerial.readString().indexOf("+CMGS")>=0;
+    gsmSerial.write(26);   // Ctrl-Z = send
+
+    // Wait up to 8s for +CMGS confirmation (network can be slow)
+    t=millis(); String resp="";
+    while (millis()-t < 8000) { while(gsmSerial.available()) resp+=(char)gsmSerial.read(); }
+
+    bool ok = resp.indexOf("+CMGS") >= 0;
+    if (!ok) {
+        lg("GSM", "No +CMGS received — resp: " + resp.substring(0,40));
+    }
+    return ok;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -660,7 +755,7 @@ void initUARTs() {
 // ══════════════════════════════════════════════════════════════
 void loadConfig() {
     prefs.begin("cfg",false);
-    prefs.getString("deviceId","UNIT_001").toCharArray(deviceId,12);
+    prefs.getString("deviceId","UNIT_002").toCharArray(deviceId,12);
     prefs.getString("phone","+2348129018208").toCharArray(phoneNumber,20);
     alertCount=prefs.getUInt("alertCount",0);
     cooldownMs=prefs.getUInt("cooldown",COOLDOWN_DEFAULT_MS);

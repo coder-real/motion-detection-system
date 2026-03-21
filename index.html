@@ -489,9 +489,10 @@
                 <div class="panel">
                   <div class="panel-header">
                     <span class="panel-title">Event Feed</span>
-                    <span class="badge badge-green" id="realtime-badge"
-                      >● Realtime</span
-                    >
+                    <div style="display:flex; gap:8px; align-items:center;">
+                      <button class="btn btn-sm" id="btn-export-csv" title="Download CSV Log">CSV</button>
+                      <span class="badge badge-green" id="realtime-badge" style="white-space:nowrap;">● Realtime</span>
+                    </div>
                   </div>
                   <div class="event-feed" id="event-feed">
                     <div

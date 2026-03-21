@@ -12,9 +12,10 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <WiFiManager.h>
+#include <Preferences.h>
 
-#define VERSION   "10.8.0"
-#define HOSTNAME  "esp32cam-sentinel"
+#define VERSION   "10.8.3"
+#define HOSTNAME  "esp32cam-sentinel-2"
 #define FLASH_LED 4
 
 
@@ -49,8 +50,7 @@ const char* WIFI_PASS = "&12345@100%";
 #endif
 
 const char* DEVICE_TOKEN = "";
-const char* DEVICE_ID    = "ESP32-CAM-01";
-
+const char* DEVICE_ID    = "ESP32-CAM-02";
 
 
 // ══════════════ TIMING ═══════════════════════════════════════
@@ -122,6 +122,7 @@ unsigned long wsUploadSentMs  = 0;     // for timeout detection
 
 // ══════════════ STATE ════════════════════════════════════════
 WebServer        web(80);
+Preferences    camPrefs;
 WebSocketsClient wsClient;
 
 bool camReady    = false;
@@ -139,6 +140,7 @@ unsigned long lastMotionMs   = 0;
 unsigned long lastPeriodicMs = 0;
 
 String pendingCmdId = "";
+bool   deviceRegistered = false;  // set true after successful /device POST
 
 // ══════════════ URL / HTTP HELPERS ═══════════════════════════
 String serverUrl(const char* path) {
@@ -243,6 +245,12 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
             doc["channel"]  = wifiChannel;
             String msg; serializeJson(doc, msg);
             wsClient.sendTXT(msg);
+            // If boot-time registration failed (DNS not ready), retry now.
+            // DNS is confirmed working since WS just connected.
+            if (!deviceRegistered) {
+                lg("DB", "Retrying device registration...");
+                registerDevice();
+            }
             break;
         }
 
@@ -358,6 +366,7 @@ void setup() {
         USE_CLOUD?"https":"http", SERVER_HOST, SERVER_PORT);
 
     initCamera();
+    loadCamSettings();   // apply any saved quality override
     initWiFi();
     initESPNOW();
     initWebSocket();
@@ -615,6 +624,21 @@ bool uploadViaWebSocket(const uint8_t* imgBuf, size_t imgLen,
 }
 
 
+
+// ═══════════════════════════════════════════════════════════════
+//  LOAD CAM SETTINGS from Preferences
+//  Called at boot — applies any saved quality, cooldown, etc.
+// ═══════════════════════════════════════════════════════════════
+void loadCamSettings() {
+    camPrefs.begin("camcfg", true);
+    uint32_t q = camPrefs.getUInt("quality", 0);
+    camPrefs.end();
+    if (q >= 4 && q <= 63) {
+        sensor_t* s = esp_camera_sensor_get();
+        if (s) { s->set_quality(s, q); lg("CFG","Quality loaded: "+String(q)); }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  CAMERA RECOVERY
 //  Called when esp_camera_fb_get() returns NULL.
@@ -761,30 +785,31 @@ void captureAndUpload(const char* snapType, bool fastCapture) {
     //  Fallback:   streamUpload() (raw TLS, 4KB chunks).
     //              Used if WS is down at capture time.
     t0 = millis();
-    bool usedWS = false;
 
     if (wsConnected) {
         bool sent = uploadViaWebSocket(imgBuf, imgLen, snapType, pendingCmdId);
-        free(imgBuf);
         if (sent) {
-            usedWS = true;
-            // Ack and busy-release happen asynchronously in upload_ack handler.
-            // Store cmdId so the ack handler can forward it to server.
+            // SUCCESS — WS path owns imgBuf from here (already copied into frame
+            // inside uploadViaWebSocket). Free it now, ack arrives asynchronously.
+            free(imgBuf);
             wsUploadPending = true;
             wsUploadCmdId   = pendingCmdId;
             wsUploadSentMs  = millis();
             pendingCmdId    = "";
             captureBusy     = false;
             uploadOK++;
-            return;  // ack arrives via webSocketEvent upload_ack
+            return;  // upload_ack arrives via webSocketEvent
         }
-        // sendBIN failed — fall through to HTTP
+        // sendBIN failed (WS unstable) — imgBuf still valid, fall through to HTTP.
+        // DO NOT free imgBuf here — HTTP fallback still needs it.
+        lg("CAM", "WS sendBIN failed — falling back to HTTP upload");
     }
 
-    if (!usedWS) {
-        // HTTP fallback: 4KB chunked TLS stream
+    {
+        // HTTP fallback: 4KB chunked TLS stream.
+        // imgBuf is still valid whether WS was tried or not.
         int code = streamUpload(bnd, hdr, imgBuf, imgLen, ftr);
-        free(imgBuf);
+        free(imgBuf);   // single owner, freed exactly once
         unsigned long elapsed = millis()-t0;
         lg("CAM","HTTP upload "+String(code)+"  "+String(elapsed)+"ms");
         bool ok = (code==200);
@@ -891,7 +916,12 @@ void registerDevice() {
     doc["status"]           = "online";
     String body; serializeJson(doc,body);
     int code = http.POST(body); http.end();
-    lg("DB","Device registered HTTP "+String(code));
+    if (code == 200 || code == 201) {
+        deviceRegistered = true;
+        lg("DB","Device registered OK");
+    } else {
+        lg("DB","Registration failed HTTP "+String(code)+" — will retry on WS connect");
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -966,7 +996,7 @@ lg("CAM", psramFound() ? "Ready — UXGA Q10" : "Ready — XGA Q15");
 // ═══════════════════════════════════════════════════════════════
 void initWiFi() {
     // ── Phase 1: STA connection via WiFiManager ──────────────────
-    // First boot: CAM creates AP "ESP32CAM-SENTINEL", user visits
+    // First boot: CAM creates AP "ESP32CAM-SENTINEL-2", user visits
     // 192.168.4.1 and enters WiFi password once. Saved to flash.
     // Subsequent boots connect automatically — no portal shown.
     WiFiManager wm;
@@ -975,11 +1005,11 @@ void initWiFi() {
     wm.setTitle("SENTINEL CAM Setup");
 
     Serial.println(F("[WIFI] Starting WiFiManager..."));
-    Serial.println(F("[WIFI] First boot? Connect to 'ESP32CAM-SENTINEL' → 192.168.4.1"));
+    Serial.println(F("[WIFI] First boot? Connect to 'ESP32CAM-SENTINEL-2' → 192.168.4.1"));
 
     // autoConnect: if saved creds work, connects silently.
-    // If not, opens portal on "ESP32CAM-SENTINEL" / "sentinel123".
-    bool ok = wm.autoConnect("ESP32CAM-SENTINEL", "sentinel123");
+    // If not, opens portal on "ESP32CAM-SENTINEL-2" / "sentinel123".
+    bool ok = wm.autoConnect("ESP32CAM-SENTINEL-2", "sentinel123");
 
     if (ok) {
         wifiReady = true;
@@ -995,7 +1025,7 @@ void initWiFi() {
     // SoftAP must be on the same channel as the STA connection so
     // ESP-NOW (which binds to the AP MAC) is reachable by the Hub.
     WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP("ESP32CAM-SENTINEL", "sentinel123", wifiChannel);
+    WiFi.softAP("ESP32CAM-SENTINEL-2", "sentinel123", wifiChannel);
     lg("WIFI","SoftAP Ch."+String(wifiChannel));
 
     WiFi.setSleep(false);
@@ -1072,11 +1102,99 @@ void startWebServer() {
             "<tr><td style='color:#888'>Uploads</td><td>"+String(uploadOK)+" OK / "+String(uploadFail)+" fail</td></tr>"
             "</table><br>"
             "<a href='/capture' style='color:#4af'>📷 Snapshot</a>&nbsp;"
-            "<a href='/status' style='color:#4af'>📊 JSON</a></body></html>";
+            "<a href='/settings' style='color:#4af'>⚙ Settings</a>&nbsp;"
+            "<a href='/status' style='color:#4af'>📊 JSON</a>&nbsp;"
+            "<a href='/reboot' style='color:#fa0'>↺ Reboot</a></body></html>";
         web.send(200,"text/html",h);
     });
+    // ── /settings GET — show config form ────────────────────────
+    web.on("/settings", HTTP_GET, [](){
+        camPrefs.begin("camcfg", true);
+        String devId   = camPrefs.getString("device_id",   DEVICE_ID);
+        String motCool = String(camPrefs.getUInt("mot_cool", MOTION_COOLDOWN_MS / 1000));
+        String perMin  = String(camPrefs.getUInt("per_min",  PERIODIC_CAPTURE_MS / 60000));
+        String quality = String(camPrefs.getUInt("quality",  10));
+        camPrefs.end();
+
+        String h = "<!DOCTYPE html><html><head>"
+            "<title>SENTINEL Settings</title>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<style>"
+            "body{font-family:monospace;background:#0a0a0a;color:#ddd;padding:20px;max-width:480px}"
+            "h2{color:#4af}label{color:#aaa;display:block;margin-top:14px;font-size:13px}"
+            "input{width:100%;box-sizing:border-box;background:#1a1a1a;color:#fff;"
+            "border:1px solid #333;padding:8px;margin-top:4px;border-radius:4px;font-family:monospace}"
+            "button{margin-top:20px;width:100%;padding:10px;background:#4af;color:#000;"
+            "border:none;border-radius:4px;font-size:15px;cursor:pointer;font-weight:bold}"
+            "button:active{background:#28f}.note{color:#666;font-size:11px;margin-top:4px}"
+            ".ok{color:#4f4;margin-top:12px;display:none}"
+            "</style></head><body>"
+            "<h2>⚙ SENTINEL CAM " + String(VERSION) + "</h2>"
+            "<form method='POST' action='/settings'>"
+            "<label>Device ID</label>"
+            "<input name='device_id' value='" + devId + "' maxlength='11'>"
+            "<p class='note'>Identifies this camera in the dashboard</p>"
+            "<label>Motion cooldown (seconds)</label>"
+            "<input name='mot_cool' type='number' value='" + motCool + "' min='1' max='300'>"
+            "<p class='note'>Minimum gap between motion-triggered captures</p>"
+            "<label>Periodic capture interval (minutes)</label>"
+            "<input name='per_min' type='number' value='" + perMin + "' min='1' max='1440'>"
+            "<p class='note'>How often to capture automatically (0 = disable)</p>"
+            "<label>JPEG quality (1=best/large … 63=worst/small)</label>"
+            "<input name='quality' type='number' value='" + quality + "' min='4' max='63'>"
+            "<p class='note'>Recommended: 10 (UXGA). Lower = sharper but larger file.</p>"
+            "<button type='submit'>💾 Save &amp; Apply</button>"
+            "</form>"
+            "<p style='color:#666;font-size:11px;margin-top:20px'>"
+            "Changes apply instantly. No reboot needed.<br>"
+            "To change WiFi: reboot and connect to ESP32CAM-SENTINEL-2 AP.</p>"
+            "</body></html>";
+        web.send(200, "text/html", h);
+    });
+
+    // ── /settings POST — save and apply ──────────────────────────
+    web.on("/settings", HTTP_POST, [](){
+        camPrefs.begin("camcfg", false);
+        bool changed = false;
+
+        if (web.hasArg("device_id")) {
+            String v = web.arg("device_id"); v.trim();
+            if (v.length() > 0) { camPrefs.putString("device_id", v); changed = true; }
+        }
+        if (web.hasArg("mot_cool")) {
+            uint32_t v = web.arg("mot_cool").toInt();
+            if (v >= 1 && v <= 300) { camPrefs.putUInt("mot_cool", v); changed = true; }
+        }
+        if (web.hasArg("per_min")) {
+            uint32_t v = web.arg("per_min").toInt();
+            if (v <= 1440) { camPrefs.putUInt("per_min", v); changed = true; }
+        }
+        if (web.hasArg("quality")) {
+            uint32_t q = web.arg("quality").toInt();
+            if (q >= 4 && q <= 63) {
+                camPrefs.putUInt("quality", q);
+                // Apply immediately to live sensor
+                sensor_t* s = esp_camera_sensor_get();
+                if (s) s->set_quality(s, q);
+                changed = true;
+            }
+        }
+        camPrefs.end();
+
+        if (changed) lg("CFG", "Settings updated via web");
+        web.sendHeader("Location", "/settings");
+        web.send(303);
+    });
+
+    // ── /reboot ──────────────────────────────────────────────────
+    web.on("/reboot", [](){
+        web.send(200,"text/html","<html><body style='font-family:monospace;background:#0a0a0a;color:#ddd;padding:20px'>"
+            "<p style='color:#fa0'>Rebooting in 2 seconds...</p></body></html>");
+        delay(2000); ESP.restart();
+    });
+
     web.begin();
-    lg("WEB","http://"+WiFi.localIP().toString());
+    lg("WEB","http://"+WiFi.localIP().toString()+" — /settings to configure");
 }
 
 void lg(const String& m, const String& msg) {

@@ -671,7 +671,7 @@ a {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .gps-main {
@@ -696,8 +696,9 @@ a {
 }
 
 .gps-icon-wrap.fix-none {
-  background: var(--red-bg);
-  border-color: rgba(204, 0, 0, 0.25);
+  background: var(--surface-3);
+  border-color: var(--border);
+  color: var(--white-45);
 }
 .gps-icon-wrap.fix-search {
   background: var(--yellow-dim);
@@ -726,7 +727,7 @@ a {
   margin-bottom: 2px;
 }
 .gps-fix-label.fix-none {
-  color: var(--red-hi);
+  color: var(--white-45);
 }
 .gps-fix-label.fix-search {
   color: var(--yellow);
@@ -805,15 +806,15 @@ a {
 .stats-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-  margin-bottom: 24px;
+  gap: 12px;
+  margin-bottom: 16px;
 }
 
 .stat-card {
   background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 22px 24px;
+  padding: 16px 20px;
   position: relative;
   overflow: hidden;
   transition:
@@ -880,19 +881,19 @@ a {
 /* ============================================================ DASHBOARD GRID */
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 1fr 360px;
-  gap: 18px;
+  grid-template-columns: 1fr 340px;
+  gap: 14px;
 }
 
 .dashboard-left {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
 }
 .dashboard-right {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
 }
 
 /* ============================================================ PANEL */
@@ -952,7 +953,7 @@ a {
   position: relative;
   background: #000;
   overflow: hidden;
-  min-height: 200px;
+  min-height: 120px;
 }
 
 .live-img {
@@ -1091,7 +1092,7 @@ a {
 
 /* ============================================================ EVENT FEED */
 .event-feed {
-  max-height: 400px;
+  max-height: 250px;
   overflow-y: auto;
 }
 
@@ -1247,7 +1248,7 @@ a {
 
 /* ============================================================ MAP */
 #map {
-  height: 280px;
+  height: 180px;
   background: var(--surface-3);
 }
 
@@ -1361,7 +1362,7 @@ a {
 
 /* ============================================================ LOG FEED */
 .log-feed {
-  max-height: 320px;
+  max-height: 180px;
   overflow-y: auto;
 }
 
