@@ -348,7 +348,7 @@
             </div>
           </div>
 
-          <div class="view-content">
+          <div class="view-content" style="overflow-y: hidden; display: flex; flex-direction: column; padding: 16px 24px; padding-bottom:0;">
             <!-- GPS Status Bar -->
             <div class="gps-status-bar" id="gps-status-bar">
               <div class="gps-main">
@@ -789,6 +789,16 @@
               <p class="view-subtitle">
                 All captured frames · Click to inspect
               </p>
+            </div>
+            <div class="view-actions">
+              <button class="btn btn-sm" id="btn-export-csv-gallery" title="Download CSV Log">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Export CSV
+              </button>
             </div>
           </div>
           <div class="gallery-filters">

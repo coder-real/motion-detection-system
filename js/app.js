@@ -129,15 +129,16 @@ function switchView(view) {
   }
 }
 
-// ============================================================
-// DEBOUNCE UTIL — prevents render thrashing from rapid events
-// ============================================================
-function debounce(fn, ms) {
-  let timer;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
+// Debounced versions used by high-frequency Realtime channels.
+// renderStats + renderDeviceCards fire on every heartbeat (30s) but
+// also on every device-table change. Debouncing at 300ms collapses
+// bursts without any visible lag.
+
+// We determine "online" based on a 3-minute heartbeat window
+function computeLiveStatus(device) {
+  if (!device.last_seen) return "offline";
+  const age = Date.now() - new Date(device.last_seen).getTime();
+  return age < (3 * 60 * 1000) ? "online" : "offline";
 }
 
 // Debounced versions used by high-frequency Realtime channels.
@@ -278,9 +279,9 @@ function renderStats() {
       new Date(e.created_at).toDateString() === today &&
       e.snapshot_type === "motion",
   ).length;
-  const online = state.devices.filter((d) => d.status === "online").length;
+  const online = state.devices.filter((d) => computeLiveStatus(d) === "online").length;
   const recentDevices = state.devices.filter(d => {
-    if (d.status === "online") return true;
+    if (computeLiveStatus(d) === "online") return true;
     if (!d.last_seen) return false;
     return Date.now() - new Date(d.last_seen).getTime() < 86400000;
   }).length;
@@ -629,7 +630,7 @@ function updateTopbarPills() {
   // All values come from DB-fresh state.devices + state.deviceStats.
   const camDev = state.devices.find((d) => d.device_id === snapshotTarget);
   const latestHB = state.deviceStats[snapshotTarget];
-  const camOnline = camDev?.status === "online";
+  const camOnline = computeLiveStatus(camDev || {});
 
   const camLabel = camOnline
     ? "Online"
@@ -1003,7 +1004,7 @@ function renderDevicesFull() {
   state.devices.forEach((device) => {
     // ── All data sourced from DB state only ─────────────────────
     const hb = state.deviceStats[device.device_id] || {};
-    const status = device.status || "offline";
+    const status = computeLiveStatus(hb || device);
     const isCam = device.device_type?.includes("cam");
 
     // Device identity
@@ -1445,12 +1446,9 @@ function setupRealtime() {
     const STALE_MS = 3 * 60 * 1000; // 3 minutes = 2 missed heartbeats
     let changed = false;
     state.devices.forEach((d) => {
-      if (d.status === "online" && d.last_seen) {
-        const age = Date.now() - new Date(d.last_seen).getTime();
-        if (age > STALE_MS) {
-          d.status = "offline";
-          changed = true;
-        }
+      if (computeLiveStatus(d) === "offline" && d.status !== "offline") {
+        d.status = "offline";
+        changed = true;
       }
     });
     if (changed) {
@@ -1538,7 +1536,7 @@ function setupLogExport() {
 // CSV EXPORT (SNAPSHOTS)
 // ============================================================
 function setupCsvExport() {
-  el("btn-export-csv")?.addEventListener("click", () => {
+  const downloadCsv = () => {
     // We only export events that have snapshot_url OR triggered_by
     const rows = [
       ["Timestamp", "Device ID", "Trigger", "Type", "Lat", "Lng", "Distance[cm]", "Satellites", "RSSI[dBm]", "Image URL"]
@@ -1566,9 +1564,11 @@ function setupCsvExport() {
     a.download = `sentinel_snapshots_${new Date().toISOString().split("T")[0]}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
-  });
+  };
+  
+  el("btn-export-csv")?.addEventListener("click", downloadCsv);
+  el("btn-export-csv-gallery")?.addEventListener("click", downloadCsv);
 }
-
 // ============================================================
 // THEME TOGGLE AND MOBILE NAV
 // ============================================================
