@@ -349,23 +349,21 @@
           </div>
 
           <div class="view-content">
-            <!-- GPS Status Bar -->
-            <div class="gps-status-bar" id="gps-status-bar">
-              <div class="gps-main">
+            <!-- Combined GPS + Stats Top Bar -->
+            <div class="dash-top-bar">
+              <!-- GPS -->
+              <div class="dash-top-gps">
                 <div class="gps-icon-wrap fix-none" id="gps-icon-wrap">🛰</div>
                 <div class="gps-text">
-                  <div class="gps-fix-label fix-none" id="gps-fix-label">
-                    No GPS Fix
-                  </div>
-                  <div class="gps-fix-sub" id="gps-fix-sub">
-                    Waiting for satellite data...
-                  </div>
+                  <div class="gps-fix-label fix-none" id="gps-fix-label">No GPS Fix</div>
+                  <div class="gps-fix-sub" id="gps-fix-sub">Waiting for satellite data...</div>
                 </div>
               </div>
-              <div class="gps-divider"></div>
-              <div class="gps-stat">
-                <div class="gps-stat-label">Satellites</div>
-                <div class="gps-stat-value" id="gps-sats">0</div>
+              <div class="dash-top-divider"></div>
+              <!-- Sats -->
+              <div class="dash-top-stat">
+                <div class="dash-top-stat-label">Satellites</div>
+                <div class="dash-top-stat-value" id="gps-sats">0</div>
                 <div class="gps-sats-display" id="gps-sats-display">
                   <div class="gps-sat-bar" style="height: 5px"></div>
                   <div class="gps-sat-bar" style="height: 8px"></div>
@@ -377,62 +375,35 @@
                   <div class="gps-sat-bar" style="height: 8px"></div>
                 </div>
               </div>
-              <div class="gps-divider"></div>
-              <div class="gps-stat">
-                <div class="gps-stat-label">Coordinates</div>
-                <div
-                  class="gps-stat-value"
-                  id="gps-coords"
-                  style="font-size: 12px"
-                >
-                  —
-                </div>
+              <div class="dash-top-divider"></div>
+              <!-- Motion Today -->
+              <div class="dash-top-stat">
+                <div class="dash-top-stat-label">Motion Today</div>
+                <div class="dash-top-stat-value alert" id="stat-today">—</div>
               </div>
-              <div class="gps-divider"></div>
-              <div class="gps-stat">
-                <div class="gps-stat-label">Last Fix</div>
-                <div
-                  class="gps-stat-value"
-                  id="gps-last-fix"
-                  style="font-size: 12px"
-                >
-                  —
-                </div>
+              <div class="dash-top-divider"></div>
+              <!-- Devices Online -->
+              <div class="dash-top-stat">
+                <div class="dash-top-stat-label">Devices Online</div>
+                <div class="dash-top-stat-value good" id="stat-devices">—</div>
               </div>
-              <div class="gps-divider"></div>
-              <div class="gps-stat">
-                <div class="gps-stat-label">Distance (last)</div>
-                <div class="gps-stat-value" id="gps-last-distance">—</div>
+              <div class="dash-top-divider"></div>
+              <!-- Total Events -->
+              <div class="dash-top-stat">
+                <div class="dash-top-stat-label">Total Events</div>
+                <div class="dash-top-stat-value" id="stat-total">—</div>
               </div>
-            </div>
-
-            <!-- Stats Row -->
-            <div class="stats-row">
-              <div class="stat-card">
-                <div class="stat-label">Total Events</div>
-                <div class="stat-value" id="stat-total">—</div>
-                <div class="stat-sub">All time captures</div>
+              <div class="dash-top-divider"></div>
+              <!-- Last GPS -->
+              <div class="dash-top-stat">
+                <div class="dash-top-stat-label">Last Location</div>
+                <div class="dash-top-stat-value" style="font-size:11px; letter-spacing:0" id="stat-last-coords">—</div>
               </div>
-              <div class="stat-card">
-                <div class="stat-label">Motion Today</div>
-                <div class="stat-value alert" id="stat-today">—</div>
-                <div class="stat-sub">PIR triggers today</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-label">Devices Online</div>
-                <div class="stat-value good" id="stat-devices">—</div>
-                <div class="stat-sub">Hardware nodes</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-label">Last Location</div>
-                <div
-                  class="stat-value"
-                  style="font-size: 20px; letter-spacing: 0"
-                  id="stat-last-coords"
-                >
-                  —
-                </div>
-                <div class="stat-sub">GPS coordinates</div>
+              <div class="dash-top-divider"></div>
+              <!-- Coords -->
+              <div class="dash-top-stat">
+                <div class="dash-top-stat-label">Coordinates</div>
+                <div class="dash-top-stat-value" style="font-size:11px" id="gps-coords">—</div>
               </div>
             </div>
 
@@ -576,7 +547,7 @@
                 </div>
 
                 <!-- Mini Log -->
-                <div class="panel">
+                <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
                   <div class="panel-header">
                     <span class="panel-title">System Log</span>
                     <a class="panel-badge" data-view="logs">View All ↗</a>

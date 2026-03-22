@@ -489,8 +489,7 @@ async function triggerSnapshot() {
   el("live-loading")?.classList.add("visible");
 
   try {
-    // Delete any stale pending/processing commands so the new
-    // one is the only thing the server will receive via Realtime.
+    // Delete any stale pending/processing commands
     const { error: delError } = await db
       .from("commands")
       .delete()
@@ -500,6 +499,9 @@ async function triggerSnapshot() {
 
     const targetLabel =
       CAM_DEVICES.find((d) => d.id === snapshotTarget)?.label || snapshotTarget;
+
+    const commandTime = new Date().toISOString();
+
     const { error } = await db.from("commands").insert({
       device_id: snapshotTarget,
       command: "capture",
@@ -507,29 +509,81 @@ async function triggerSnapshot() {
     });
     if (error) throw error;
 
-    // With WebSocket push, command arrives at ESP32 in <100ms.
-    // Capture + upload takes ~2-4s. Total: ~3-5s.
     showToast(
       "info",
       "Snapshot Sent",
-      `${targetLabel} capturing via WebSocket (~2-4s)...`,
-      8000,
+      `${targetLabel} — waiting for image...`,
+      10000,
     );
 
-    // Safety timeout — if no image arrives in 20s, release anyway
-    setTimeout(() => {
-      if (snapshotPending) {
+    // Ping server directly to wake it up (in case Render is sleeping)
+    fetch(`${SERVER_URL}/health`).catch(() => {});
+
+    // Poll Supabase every 3s for a new event from this device
+    // (fallback for when SSE drops or misses the event)
+    let pollCount = 0;
+    const maxPolls = 30; // 30 × 3s = 90s max
+
+    const pollInterval = setInterval(async () => {
+      if (!snapshotPending) {
+        clearInterval(pollInterval);
+        return;
+      }
+
+      pollCount++;
+      if (pollCount > maxPolls) {
+        clearInterval(pollInterval);
         snapshotPending = false;
         unlockSnapshotButtons();
         el("live-loading")?.classList.remove("visible");
         showToast(
           "warn",
-          "Timeout",
-          "No image in 20s — check server is running",
-          5000,
+          "No Response",
+          "Camera did not respond in 90s — check device is online",
+          6000,
         );
+        return;
       }
-    }, 20000);
+
+      try {
+        const { data } = await db
+          .from("events")
+          .select("id,device_id,snapshot_type,snapshot_url,created_at,latitude,longitude,triggered_by,distance_cm,sms_sent,satellites,gps_valid,cam_rssi,cam_heap_bytes")
+          .eq("device_id", snapshotTarget)
+          .gte("created_at", commandTime)
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        if (data?.length > 0) {
+          clearInterval(pollInterval);
+          const event = data[0];
+
+          // Avoid duplicate if SSE already handled it
+          const alreadyInList = state.events.find((e) => e.id === event.id);
+          if (!alreadyInList) {
+            state.events.unshift(event);
+            state.totalEvents++;
+            prependEventToFeed(event);
+            addSingleMarker(event);
+            renderStats();
+            updateTopbarPills();
+            if (state.currentView === "gallery") renderGallery();
+          }
+
+          if (event.snapshot_url) {
+            updateCameraImage(event.snapshot_url, event.created_at, event);
+          }
+
+          snapshotPending = false;
+          unlockSnapshotButtons();
+          el("live-loading")?.classList.remove("visible");
+          showToast("success", "Snapshot Ready", "Image captured successfully", 3000);
+        }
+      } catch (pollErr) {
+        console.warn("[POLL] Error polling for snapshot:", pollErr.message);
+      }
+    }, 3000);
+
   } catch (err) {
     snapshotPending = false;
     unlockSnapshotButtons();
@@ -1140,90 +1194,93 @@ function renderDevicesFull() {
         </div>
       </div>
 
-      <!-- Sections grid ─────────────────────────────────────── -->
-      <div class="dv-sections">
+      <!-- Content wrapper (flex row on desktop) ─────────────── -->
+      <div class="dv-content">
+        <!-- Sections grid ─────────────────────────────────────── -->
+        <div class="dv-sections">
 
-        ${devSection("Identity", [
-          devField("Device Name", devName),
-          devField("Device ID", device.device_id),
-          devField("Type", device.device_type || "—"),
-          devField("Firmware", fw),
-          devField("IP Address", ip),
-          devField("Last Seen", lastSeen),
-        ])}
+          ${devSection("Identity", [
+            devField("Device Name", devName),
+            devField("Device ID", device.device_id),
+            devField("Type", device.device_type || "—"),
+            devField("Firmware", fw),
+            devField("IP Address", ip),
+            devField("Last Seen", lastSeen),
+          ])}
 
-        ${devSection("Connectivity", [
-          devField(
-            "Status",
-            status.toUpperCase(),
-            status === "online" ? "var(--green)" : "var(--white-45)",
-          ),
-          devField(
-            "WiFi RSSI",
-            rssi !== null ? `${rssi} dBm` : "—",
-            rssiColor(rssi),
-          ),
-          devField(
-            "WebSocket",
-            wsState,
-            wsState === "Connected" ? "var(--green)" : "var(--white-45)",
-          ),
-          devField("Free Heap", heap),
-          devField("Uptime", uptime),
-        ])}
+          ${devSection("Connectivity", [
+            devField(
+              "Status",
+              status.toUpperCase(),
+              status === "online" ? "var(--green)" : "var(--white-45)",
+            ),
+            devField(
+              "WiFi RSSI",
+              rssi !== null ? `${rssi} dBm` : "—",
+              rssiColor(rssi),
+            ),
+            devField(
+              "WebSocket",
+              wsState,
+              wsState === "Connected" ? "var(--green)" : "var(--white-45)",
+            ),
+            devField("Free Heap", heap),
+            devField("Uptime", uptime),
+          ])}
+
+          ${
+            isCam
+              ? devSection("Camera", [
+                  devField(
+                    "Camera State",
+                    hb.cam_alerts != null ? "Active" : "—",
+                  ),
+                  devField("Alerts", camAlerts),
+                  devField("Uploads", camUploads),
+                  devField("Events (loaded)", evCount),
+                  devField(
+                    "Last Event",
+                    latestEv ? timeAgo(latestEv.created_at) : "—",
+                  ),
+                  devField("Last Type", latestEv?.snapshot_type || "—"),
+                ])
+              : ""
+          }
+
+          ${devSection("Sensor Hub", [
+            devField(
+              "Battery",
+              hubBatV,
+              hubBatV !== "—" && parseFloat(hubBatV) < 3.5
+                ? "var(--yellow)"
+                : undefined,
+            ),
+            devField("Hub Heap", hubHeap),
+            devField(
+              "GPS",
+              gpsValid,
+              gpsValid === "Fix" ? "var(--green)" : "var(--white-45)",
+            ),
+            devField("Satellites", gpsSats),
+            devField(
+              "GSM",
+              gsmReady,
+              gsmReady === "Ready" ? "var(--green)" : "var(--white-45)",
+            ),
+          ])}
+
+        </div>
 
         ${
-          isCam
-            ? devSection("Camera", [
-                devField(
-                  "Camera State",
-                  hb.cam_alerts != null ? "Active" : "—",
-                ),
-                devField("Alerts", camAlerts),
-                devField("Uploads", camUploads),
-                devField("Events (loaded)", evCount),
-                devField(
-                  "Last Event",
-                  latestEv ? timeAgo(latestEv.created_at) : "—",
-                ),
-                devField("Last Type", latestEv?.snapshot_type || "—"),
-              ])
+          latestEv?.snapshot_url
+            ? `
+        <div class="dv-latest-snap">
+          <div class="dv-snap-label">Latest Capture · ${formatDateTime(latestEv.created_at)}</div>
+          <img class="dv-snap-img" src="${latestEv.snapshot_url}" alt="latest capture" loading="lazy">
+        </div>`
             : ""
         }
-
-        ${devSection("Sensor Hub", [
-          devField(
-            "Battery",
-            hubBatV,
-            hubBatV !== "—" && parseFloat(hubBatV) < 3.5
-              ? "var(--yellow)"
-              : undefined,
-          ),
-          devField("Hub Heap", hubHeap),
-          devField(
-            "GPS",
-            gpsValid,
-            gpsValid === "Fix" ? "var(--green)" : "var(--white-45)",
-          ),
-          devField("Satellites", gpsSats),
-          devField(
-            "GSM",
-            gsmReady,
-            gsmReady === "Ready" ? "var(--green)" : "var(--white-45)",
-          ),
-        ])}
-
-      </div>
-
-      ${
-        latestEv?.snapshot_url
-          ? `
-      <div class="dv-latest-snap">
-        <div class="dv-snap-label">Latest Capture · ${formatDateTime(latestEv.created_at)}</div>
-        <img class="dv-snap-img" src="${latestEv.snapshot_url}" alt="latest capture" loading="lazy">
-      </div>`
-          : ""
-      }`;
+      </div>`;
 
     container.appendChild(card);
   });
@@ -1675,6 +1732,63 @@ async function init() {
       /* silent — UI stays on last known state */
     }
   }, 120_000);
+
+  // Periodic event poll — catches new events when SSE drops
+  // (motion, manual captures, etc.) so no manual refresh needed.
+  setInterval(async () => {
+    try {
+      const newestKnown = state.events[0]?.created_at;
+      if (!newestKnown) return;
+
+      const { data } = await db
+        .from("events")
+        .select("id,device_id,triggered_by,snapshot_type,latitude,longitude,snapshot_url,distance_cm,sms_sent,created_at,satellites,gps_valid,cam_rssi,cam_heap_bytes")
+        .gt("created_at", newestKnown)
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      if (!data?.length) return;
+
+      let addedAny = false;
+      data.forEach((event) => {
+        const already = state.events.find((e) => e.id === event.id);
+        if (already) return;
+
+        state.events.unshift(event);
+        state.totalEvents++;
+        prependEventToFeed(event);
+        addSingleMarker(event);
+        addedAny = true;
+
+        if (event.snapshot_url) {
+          updateCameraImage(event.snapshot_url, event.created_at, event);
+        }
+        if (event.latitude && Math.abs(event.latitude) > 0.001) {
+          updateGPSState(event);
+          renderGPSBar();
+        }
+        if (event.snapshot_type === "motion") {
+          state.unreadAlerts++;
+          showMotionToast(event);
+        }
+        // Unlock snapshot button if a manual/motion capture came in
+        if (snapshotPending && event.device_id === snapshotTarget) {
+          snapshotPending = false;
+          unlockSnapshotButtons();
+          el("live-loading")?.classList.remove("visible");
+          showToast("success", "Snapshot Ready", "Image captured successfully", 3000);
+        }
+      });
+
+      if (addedAny) {
+        renderStats();
+        updateTopbarPills();
+        if (state.currentView === "gallery") renderGallery();
+      }
+    } catch (e) {
+      /* silent */
+    }
+  }, 30_000);
 }
 
 document.addEventListener("DOMContentLoaded", () => {
