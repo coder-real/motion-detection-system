@@ -511,7 +511,7 @@
                     <div
                       class="skeleton"
                       style="
-                        height: 80px;
+                        height: 1000px;
                         margin: 14px 20px;
                         border-radius: 6px;
                       "
@@ -676,11 +676,15 @@
                       d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.9L15 14M4 8h11a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4a2 2 0 012-2z"
                     />
                   </svg>
-                  <span class="live-placeholder-text">Awaiting camera feed...</span>
+                  <span class="live-placeholder-text"
+                    >Awaiting camera feed...</span
+                  >
                 </div>
               </div>
               <div class="live-footer">
-                <span class="live-timestamp" id="live-timestamp-full-footer">—</span>
+                <span class="live-timestamp" id="live-timestamp-full-footer"
+                  >—</span
+                >
               </div>
             </div>
 
@@ -690,38 +694,104 @@
                 <div class="panel-header">
                   <span class="panel-title">Camera Controls</span>
                 </div>
-                <div style="padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+                <div
+                  style="
+                    padding: 16px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                  "
+                >
                   <button
                     class="btn btn-lg"
                     style="justify-content: center; width: 100%"
                     id="btn-live-snap2"
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
                       <circle cx="12" cy="12" r="3" />
-                      <path d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                      <path
+                        d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+                      />
                     </svg>
                     Take Snapshot
                   </button>
-                  <div style="font-family: var(--font-data); font-size: 11px; color: var(--white-45); line-height: 1.7; border-top: 1px solid var(--border); padding-top: 10px;">
-                    <div>Periodic: auto every <strong style="color: var(--white-70)">5 min</strong></div>
+                  <div
+                    style="
+                      font-family: var(--font-data);
+                      font-size: 11px;
+                      color: var(--white-45);
+                      line-height: 1.7;
+                      border-top: 1px solid var(--border);
+                      padding-top: 10px;
+                    "
+                  >
+                    <div>
+                      Periodic: auto every
+                      <strong style="color: var(--white-70)">5 min</strong>
+                    </div>
                     <div>Commands via Supabase queue</div>
                   </div>
                 </div>
               </div>
 
               <div class="panel">
-                <div class="panel-header"><span class="panel-title">Last Capture</span></div>
-                <div style="padding: 14px 18px; display: flex; flex-direction: column; gap: 8px;">
-                  <div class="info-row"><span class="info-row-key">Time</span><span class="info-row-val" id="live-timestamp-full">—</span></div>
-                  <div class="info-row"><span class="info-row-key">Type</span><span class="info-row-val" id="live-type-full">—</span></div>
-                  <div class="info-row"><span class="info-row-key">GPS</span><span class="info-row-val" id="live-gps-full">—</span></div>
-                  <div class="info-row"><span class="info-row-key">Device</span><span class="info-row-val" style="font-family: var(--font-data); font-size: 11px">ESP32-CAM-01</span></div>
+                <div class="panel-header">
+                  <span class="panel-title">Last Capture</span>
+                </div>
+                <div
+                  style="
+                    padding: 14px 18px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 8px;
+                  "
+                >
+                  <div class="info-row">
+                    <span class="info-row-key">Time</span
+                    ><span class="info-row-val" id="live-timestamp-full"
+                      >—</span
+                    >
+                  </div>
+                  <div class="info-row">
+                    <span class="info-row-key">Type</span
+                    ><span class="info-row-val" id="live-type-full">—</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-row-key">GPS</span
+                    ><span class="info-row-val" id="live-gps-full">—</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-row-key">Device</span
+                    ><span
+                      class="info-row-val"
+                      style="font-family: var(--font-data); font-size: 11px"
+                      >ESP32-CAM-01</span
+                    >
+                  </div>
                 </div>
               </div>
 
-              <div class="panel" style="flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column;">
-                <div class="panel-header"><span class="panel-title">Recent Captures</span></div>
-                <div id="live-recent" style="flex: 1; overflow-y: auto;"></div>
+              <div
+                class="panel"
+                style="
+                  flex: 1;
+                  min-height: 0;
+                  overflow: hidden;
+                  display: flex;
+                  flex-direction: column;
+                "
+              >
+                <div class="panel-header">
+                  <span class="panel-title">Recent Captures</span>
+                </div>
+                <div id="live-recent" style="flex: 1; overflow-y: auto"></div>
               </div>
             </div>
           </div>
@@ -748,10 +818,17 @@
               title="Download all snapshot events as CSV"
               style="margin-left: auto"
             >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                <polyline points="7 10 12 15 17 10"/>
-                <line x1="12" y1="15" x2="12" y2="3"/>
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
               Export CSV
             </button>
@@ -786,7 +863,7 @@
             </div>
           </div>
           <div class="map-body">
-            <div id="map-full" style="background: var(--surface-3);"></div>
+            <div id="map-full" style="background: var(--surface-3)"></div>
           </div>
         </section>
 
