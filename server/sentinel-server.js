@@ -570,13 +570,15 @@ async function handleBinaryUpload(buf, deviceId) {
     cam_rssi: parseInt(meta.camRssi || "0", 10),
   };
 
-  const { error: evErr } = await supa.from("events").insert(eventRow);
+  const { error: evErr, data: evData } = await supa.from("events").insert(eventRow).select().single();
   if (evErr) {
     metrics.events.fail++;
     log("WS", `Binary upload event insert FAILED: ${evErr.message}`);
     // Image is safely stored — still ack as done
   } else {
     metrics.events.ok++;
+    // Broadcast instantly to connected dashboards
+    broadcastSSE("events", { new: evData || eventRow });
   }
 
   log("WS", `Binary upload OK → ${filename}`);

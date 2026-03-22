@@ -63,27 +63,12 @@ const $$ = (s, ctx) => [...(ctx || document).querySelectorAll(s)];
 // from guessing local time, we force UTC parsing.
 function parseUTC(iso) {
   if (!iso) return new Date();
-  
-  // Supabase returns Postgres 'timestamp' (no TZ) or 'timestamptz'
-  let s = String(iso);
-  const d = new Date(s.endsWith("Z") || s.includes("+") || s.includes("-", 11) ? s : s + "Z");
-  
-  // Auto-correct 1 hr timezone mismatches if the DB timezone differs from browser
-  const diffHours = (Date.now() - d.getTime()) / 3600000;
-  if (diffHours >= 0.9 && diffHours <= 1.2) {
-    // DB is consistently 1 hr behind, shift it forward to real-time sync with browser
-    return new Date(d.getTime() + 3600000);
-  } else if (diffHours <= -0.9 && diffHours >= -1.2) {
-    // DB is 1 hr ahead
-    return new Date(d.getTime() - 3600000);
-  }
-  return d;
+  const s = String(iso);
+  return new Date(s.endsWith("Z") || s.includes("+") ? s : s + "Z");
 }
 
 function timeAgo(iso) {
-  const d = parseUTC(iso);
-  const s = Math.floor((Date.now() - d.getTime()) / 1000);
-  if (s < 0) return 'Just now'; // Catch negative offsets
+  const s = Math.floor((Date.now() - parseUTC(iso).getTime()) / 1000);
   if (s < 60) return `${Math.max(0, s)}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
