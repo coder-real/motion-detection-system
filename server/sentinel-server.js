@@ -128,6 +128,15 @@ const commandDedup = new Set();
 const COMMAND_DEDUP_TTL = 90_000;
 const ACK_TIMEOUT_MS = 35_000;
 
+// SSE connected dashboard clients
+const sseClients = new Set();
+function broadcastSSE(type, payload) {
+  const data = JSON.stringify(payload);
+  for (const client of sseClients) {
+    client.write(`event: ${type}\ndata: ${data}\n\n`);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────
 //  HTTP + EXPRESS
 // ─────────────────────────────────────────────────────────────────
@@ -158,6 +167,28 @@ function authGuard(req, res, next) {
   }
   next();
 }
+
+// ─────────────────────────────────────────────────────────────────
+//  GET /stream — Server-Sent Events (SSE) for Dashboard
+// ─────────────────────────────────────────────────────────────────
+app.get("/stream", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  // Flush headers
+  res.flushHeaders();
+
+  // Send an initial ping to establish connection
+  res.write("event: ping\ndata: connected\n\n");
+
+  sseClients.add(res);
+  log("SSE", `Dashboard connected (Total: ${sseClients.size})`);
+
+  req.on("close", () => {
+    sseClients.delete(res);
+    log("SSE", `Dashboard disconnected (Total: ${sseClients.size})`);
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────
 //  POST /upload
@@ -261,7 +292,7 @@ app.post("/upload", authGuard, upload.single("image"), async (req, res) => {
     cam_rssi: parseInt(b.camRssi || "0", 10),
   };
 
-  const { error: evErr } = await supa.from("events").insert(eventRow);
+  const { error: evErr, data: evData } = await supa.from("events").insert(eventRow).select().single();
   if (evErr) {
     metrics.events.fail++;
     log("UPLOAD", `Event insert FAILED: ${evErr.message}`);
@@ -269,6 +300,8 @@ app.post("/upload", authGuard, upload.single("image"), async (req, res) => {
   } else {
     metrics.events.ok++;
     log("UPLOAD", `Event OK  type=${snapType}`);
+    // Broadcast instantly to connected dashboards
+    broadcastSSE("events", { new: evData || eventRow });
   }
 
   res.json({ url: publicUrl, path, event: evErr ? "fail" : "ok" });
@@ -303,6 +336,18 @@ app.post("/heartbeat", authGuard, async (req, res) => {
       "HB",
       `${body.device_id}  heap=${body.free_heap ? Math.round(body.free_heap / 1024) + "KB" : "?"}  rssi=${body.rssi || "?"}dBm`,
     );
+    // Push heartbeat and device updates instantly
+    if (hbRes.data && hbRes.data.length > 0) {
+      broadcastSSE("heartbeats", { new: hbRes.data[0] });
+    }
+    // Form a mock device row for realtime since update doesn't return the full row easily without another select
+    broadcastSSE("devices", { 
+      new: { 
+        device_id: body.device_id, 
+        status: "online", 
+        last_seen: new Date().toISOString() 
+      } 
+    });
   }
   res.json({ ok });
 });
@@ -323,7 +368,10 @@ app.post("/device", authGuard, async (req, res) => {
 //  POST /log
 // ─────────────────────────────────────────────────────────────────
 app.post("/log", authGuard, async (req, res) => {
-  const { error } = await supa.from("logs").insert(req.body);
+  const { error, data } = await supa.from("logs").insert(req.body).select().single();
+  if (!error) {
+    broadcastSSE("logs", { new: data || req.body });
+  }
   res.json({ ok: !error });
 });
 

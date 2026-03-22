@@ -56,20 +56,29 @@ const $ = (s, ctx) => (ctx || document).querySelector(s);
 const $$ = (s, ctx) => [...(ctx || document).querySelectorAll(s)];
 
 // ============================================================
+// ============================================================
 // TIME HELPERS
 // ============================================================
+// Supabase returns UTC strings often without "Z". To prevent JS
+// from guessing local time, we force UTC parsing.
+function parseUTC(iso) {
+  if (!iso) return new Date();
+  const s = String(iso);
+  return new Date(s.endsWith("Z") || s.includes("+") ? s : s + "Z");
+}
+
 function timeAgo(iso) {
-  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  const s = Math.floor((Date.now() - parseUTC(iso).getTime()) / 1000);
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
 }
 function formatTime(iso) {
-  return new Date(iso).toLocaleTimeString("en-US", { hour12: false });
+  return parseUTC(iso).toLocaleTimeString("en-US", { hour12: false });
 }
 function formatDateTime(iso) {
-  return new Date(iso).toLocaleString("en-US", {
+  return parseUTC(iso).toLocaleString("en-US", {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -80,7 +89,7 @@ function formatDateTime(iso) {
   });
 }
 function formatDateTimeShort(iso) {
-  return new Date(iso).toLocaleString("en-US", {
+  return parseUTC(iso).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -134,10 +143,21 @@ function switchView(view) {
 // also on every device-table change. Debouncing at 300ms collapses
 // bursts without any visible lag.
 
+// ============================================================
+// UTILITIES
+// ============================================================
+function debounce(fn, delay) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  };
+}
+
 // We determine "online" based on a 3-minute heartbeat window
 function computeLiveStatus(device) {
   if (!device.last_seen) return "offline";
-  const age = Date.now() - new Date(device.last_seen).getTime();
+  const age = Date.now() - parseUTC(device.last_seen).getTime();
   return age < (3 * 60 * 1000) ? "online" : "offline";
 }
 
@@ -317,20 +337,34 @@ function updateCameraImage(url, timestamp, event) {
   const overlay = el("live-overlay");
   const loadEl = el("live-loading");
 
-  if (loadEl) loadEl.classList.add("visible");
-
   if (imgEl) {
-    const src = url + "?t=" + Date.now();
-    const preloader = new Image();
-    preloader.onload = () => {
-      imgEl.src = src;
-      imgEl.style.display = "block";
-      overlay?.classList.add("hidden");
-      loadEl?.classList.remove("visible");
-      flashCapture();
+    // Try thumbnail first (server generates _thumb.jpg at 480px wide via sharp)
+    // Falls back to full URL on 404. Set src immediately so old image shows
+    // during load — no blank + spinner delay.
+    const baseUrl = url.includes("_thumb") ? url : url.replace(/\.jpg($|\?)/, "_thumb.jpg$1");
+    const thumbSrc = baseUrl + (baseUrl.includes("?") ? "&" : "?") + "t=" + Date.now();
+    const fullSrc = url + "?t=" + Date.now();
+
+    if (loadEl) loadEl.classList.add("visible");
+
+    // Set the src immediately — old image still visible while new one loads
+    imgEl.style.display = "block";
+    overlay?.classList.add("hidden");
+
+    const tryLoad = (src, fallback) => {
+      const img = new Image();
+      img.onload = () => {
+        imgEl.src = src;
+        loadEl?.classList.remove("visible");
+        flashCapture();
+      };
+      img.onerror = () => {
+        if (fallback) tryLoad(fallback, null);
+        else loadEl?.classList.remove("visible");
+      };
+      img.src = src;
     };
-    preloader.onerror = () => loadEl?.classList.remove("visible");
-    preloader.src = src;
+    tryLoad(thumbSrc, fullSrc);
   }
 
   if (tsEl && timestamp) tsEl.textContent = formatDateTime(timestamp);
@@ -338,7 +372,8 @@ function updateCameraImage(url, timestamp, event) {
   const fullImg = el("live-img-full");
   const fullOver = el("live-overlay-full");
   if (fullImg && url) {
-    fullImg.src = url + "?t=" + Date.now();
+    const fullSrc = url + "?t=" + Date.now();
+    fullImg.src = fullSrc;
     fullImg.style.display = "block";
     fullOver?.classList.add("hidden");
   }
@@ -542,12 +577,13 @@ function updateGPSState(event) {
 function renderGPSBar() {
   const sats = state.gpsState.satellites || 0;
   const valid = state.gpsState.valid;
+  const hasLastCoords = state.gpsState.latitude != null;
 
   let label, sub, cls;
   if (!valid) {
     if (sats === 0) {
-      label = "No GPS Fix";
-      sub = "No satellite signal";
+      label = "No GPS Signal";
+      sub = hasLastCoords ? "Showing last known position" : "No satellite data";
       cls = "fix-none";
     } else {
       label = "Searching...";
@@ -581,18 +617,26 @@ function renderGPSBar() {
     fixLabel.className = `gps-fix-label ${cls}`;
   }
   setVal("gps-fix-sub", sub);
-  setVal("gps-sats", sats);
+  // Only show active satellite count when we have a fix; show 0 when none
+  setVal("gps-sats", valid ? sats : 0);
 
+  // Satellite bars go dark when no fix
+  const activeBars = valid ? Math.min(sats, 8) : 0;
   $$(".gps-sat-bar", el("gps-sats-display")).forEach((bar, i) =>
-    bar.classList.toggle("active", i < Math.min(sats, 8)),
+    bar.classList.toggle("active", i < activeBars),
   );
 
-  setVal(
-    "gps-coords",
-    state.gpsState.latitude
-      ? `${state.gpsState.latitude.toFixed(6)}, ${state.gpsState.longitude.toFixed(6)}`
-      : "No fix",
-  );
+  // Always show last known coordinates — go grey labelled when no active fix
+  const coordEl = el("gps-coords");
+  if (coordEl) {
+    if (hasLastCoords) {
+      coordEl.textContent = `${state.gpsState.latitude.toFixed(6)}, ${state.gpsState.longitude.toFixed(6)}`;
+      coordEl.style.color = valid ? "" : "var(--white-25)";
+    } else {
+      coordEl.textContent = "—";
+      coordEl.style.color = "";
+    }
+  }
   setVal(
     "gps-last-fix",
     state.gpsState.lastFixTime
@@ -618,7 +662,7 @@ function renderGPSBar() {
     "pill-gps",
     pillState,
     dotColor,
-    sats > 0 ? `${sats} Sats` : "No Fix",
+    valid && sats > 0 ? `${sats} Sats` : hasLastCoords ? "Last Fix" : "No Fix",
   );
 }
 
@@ -682,32 +726,51 @@ function updateTopbarPills() {
   );
 
   // ── GSM pill: hub heartbeat data only (never inferred) ────────
+  // CSQ ranges: 99=no signal, 0=off, 1-9=poor, 10-14=weak, 15-19=fair, 20-30=good, >30=excellent
   const hubHB = Object.values(state.deviceStats).find(
     (hb) => hb.hub_gsm_csq !== undefined,
   );
   const gsmCsq = hubHB?.hub_gsm_csq;
-  
+
   let gsmState = "offline";
   let gsmColor = "grey";
-  let gsmLabel = "Unknown";
+  let gsmLabel = "—";
 
   if (gsmCsq != null) {
-    if (gsmCsq === 99 || gsmCsq === 0) {
+    if (gsmCsq === 99) {
+      // 99 means "not known or not detectable" per 3GPP — definitively no signal
       gsmState = "offline";
       gsmColor = "grey";
-      gsmLabel = gsmCsq === 99 ? "No Signal" : "CSQ 0";
-    } else if (gsmCsq < 10) {
+      gsmLabel = "No Signal";
+    } else if (gsmCsq === 0) {
+      gsmState = "offline";
+      gsmColor = "grey";
+      gsmLabel = "Off (CSQ 0)";
+    } else if (gsmCsq <= 9) {
+      // -113 to -97 dBm — very poor, may drop calls
+      gsmState = "warn";
+      gsmColor = "red";
+      gsmLabel = `CSQ ${gsmCsq} · Poor`;
+    } else if (gsmCsq <= 14) {
+      // -95 to -85 dBm — marginal
       gsmState = "warn";
       gsmColor = "orange";
-      gsmLabel = `CSQ ${gsmCsq} (Weak)`;
-    } else if (gsmCsq < 15) {
+      gsmLabel = `CSQ ${gsmCsq} · Weak`;
+    } else if (gsmCsq <= 19) {
+      // -83 to -73 dBm — acceptable
       gsmState = "online";
       gsmColor = "yellow";
-      gsmLabel = `CSQ ${gsmCsq} (OK)`;
-    } else {
+      gsmLabel = `CSQ ${gsmCsq} · Fair`;
+    } else if (gsmCsq <= 30) {
+      // -71 to -51 dBm — good
       gsmState = "online";
       gsmColor = "green";
-      gsmLabel = `CSQ ${gsmCsq} (Good)`;
+      gsmLabel = `CSQ ${gsmCsq} · Good`;
+    } else {
+      // -49 dBm and above — excellent
+      gsmState = "online";
+      gsmColor = "green";
+      gsmLabel = `CSQ ${gsmCsq} · Excellent`;
     }
   } else if (state.events.some((e) => e.sms_sent)) {
     gsmState = "online";
@@ -729,7 +792,8 @@ function setPill(id, state, dotColor, text) {
 }
 
 function updateTopbarStatus() {
-  const online = state.devices.filter((d) => d.status === "online").length;
+  // Use computeLiveStatus (time-based) — same as renderStats() so both counts agree
+  const online = state.devices.filter((d) => computeLiveStatus(d) === "online").length;
   const total = state.devices.length;
   const statusEl = el("topbar-device-status");
   if (statusEl) {
@@ -1294,156 +1358,123 @@ function setupLightbox() {
 }
 
 // ============================================================
-// REALTIME — filtered, append-only
+// REALTIME — EventSource (SSE) from Vercel Node Server
 // ============================================================
 function setupRealtime() {
-  // New events — no filter, receives from ALL connected cameras
-  db.channel("events-rt")
-    .on(
-      "postgres_changes",
-      {
-        event: "INSERT",
-        schema: "public",
-        table: "events",
-      },
-      (payload) => {
-        const event = payload.new;
-        state.events.unshift(event);
-        state.totalEvents++; // keep true count in sync without re-querying
+  const streamUrl = `${SERVER_URL}/stream`;
+  const es = new EventSource(streamUrl);
 
-        if (event.snapshot_url)
-          updateCameraImage(event.snapshot_url, event.created_at, event);
+  es.onopen = () => {
+    console.log("[SSE] Connected to Vercel stream");
+    updateRealtimeIndicator(true);
+  };
 
-        // Command completed — unlock snapshot button
-        if (
-          event.snapshot_type === "manual" &&
-          snapshotPending &&
-          event.device_id === snapshotTarget
-        ) {
-          snapshotPending = false;
-          unlockSnapshotButtons();
-          el("live-loading")?.classList.remove("visible");
-          showToast(
-            "success",
-            "Snapshot Ready",
-            "Image captured via WebSocket push",
-            3000,
-          );
-        }
+  es.onerror = (err) => {
+    console.warn("[SSE] Connection lost, retrying...");
+    updateRealtimeIndicator(false);
+  };
 
-        if (event.snapshot_type === "motion") {
-          state.unreadAlerts++;
-          showMotionToast(event);
-        }
+  // ── New Events ────────────────────────────────────────────────
+  es.addEventListener("events", (e) => {
+    const payload = JSON.parse(e.data);
+    const event = payload.new;
+    state.events.unshift(event);
+    state.totalEvents++;
 
-        if (event.latitude && Math.abs(event.latitude) > 0.001) {
-          updateGPSState(event);
-          renderGPSBar();
-        }
+    if (event.snapshot_url) {
+      updateCameraImage(event.snapshot_url, event.created_at, event);
+    }
 
-        prependEventToFeed(event);
-        addSingleMarker(event);
-        renderStats();
-        updateTopbarPills();
-        if (state.currentView === "gallery") renderGallery();
-      },
-    )
-    .subscribe();
+    if (
+      event.snapshot_type === "manual" &&
+      snapshotPending &&
+      event.device_id === snapshotTarget
+    ) {
+      snapshotPending = false;
+      unlockSnapshotButtons();
+      el("live-loading")?.classList.remove("visible");
+      showToast("success", "Snapshot Ready", "Image captured instantly", 3000);
+    }
 
-  // Device status changes
-  db.channel("devices-rt")
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "devices" },
-      (payload) => {
-        const device = payload.new;
-        const idx = state.devices.findIndex(
-          (d) => d.device_id === device.device_id,
-        );
-        if (idx >= 0) {
-          state.devices[idx] = { ...state.devices[idx], ...device };
-        } else {
-          state.devices.unshift(device);
-        }
-        debouncedRenderDeviceCards();
-        debouncedRenderStats();
-        debouncedUpdateTopbar();
-        if (state.currentView === "devices") renderDevicesFull();
-      },
-    )
-    .subscribe();
+    if (event.snapshot_type === "motion") {
+      state.unreadAlerts++;
+      showMotionToast(event);
+    }
 
-  // New logs
-  db.channel("logs-rt")
-    .on(
-      "postgres_changes",
-      { event: "INSERT", schema: "public", table: "logs" },
-      (payload) => {
-        state.logs.unshift(payload.new);
-        prependLogToFeed(payload.new);
-      },
-    )
-    .subscribe();
+    if (event.latitude && Math.abs(event.latitude) > 0.001) {
+      updateGPSState(event);
+      renderGPSBar();
+    }
 
-  // Heartbeats — update device status + GPS satellites
-  db.channel("heartbeats-rt")
-    .on(
-      "postgres_changes",
-      { event: "INSERT", schema: "public", table: "heartbeats" },
-      (payload) => {
-        const hb = payload.new;
-        state.deviceStats[hb.device_id] = hb;
+    prependEventToFeed(event);
+    addSingleMarker(event);
+    renderStats();
+    updateTopbarPills();
+    if (state.currentView === "gallery") renderGallery();
+  });
 
-        // Always update state.deviceStats with the newest heartbeat (from DB via Realtime).
-        // Then update state.devices to reflect what the DB actually stored —
-        // never merge with stale cached values.
-        const devIdx = state.devices.findIndex(
-          (d) => d.device_id === hb.device_id,
-        );
-        const freshDevice = {
-          device_id: hb.device_id,
-          name: hb.device_id,
-          device_type: hb.device_id?.toLowerCase().includes("cam")
-            ? "esp32_cam"
-            : "sensor",
-          status: "online",
-          last_seen: hb.created_at || new Date().toISOString(),
-          ip_address: hb.ip_address || "—",
-          firmware_version: hb.firmware_version || "—",
-        };
-        if (devIdx >= 0) {
-          // Preserve DB-only fields (name, device_type) but update live fields from HB
-          state.devices[devIdx] = { ...state.devices[devIdx], ...freshDevice };
-        } else {
-          state.devices.unshift(freshDevice);
-        }
+  // ── Device Updates ────────────────────────────────────────────
+  es.addEventListener("devices", (e) => {
+    const payload = JSON.parse(e.data);
+    const device = payload.new;
+    const idx = state.devices.findIndex((d) => d.device_id === device.device_id);
+    if (idx >= 0) {
+      state.devices[idx] = { ...state.devices[idx], ...device };
+    } else {
+      state.devices.unshift(device);
+    }
+    debouncedRenderDeviceCards();
+    debouncedRenderStats();
+    debouncedUpdateTopbar();
+    if (state.currentView === "devices") renderDevicesFull();
+  });
 
-        // Update GPS state from hub heartbeat fields
-        if (hb.hub_gps_sats !== undefined) {
-          state.gpsState.satellites = hb.hub_gps_sats;
-        }
-        if (hb.hub_gps_valid !== undefined) {
-          state.gpsState.valid = !!hb.hub_gps_valid;
-          // If GPS fix just dropped, reflect that immediately
-          if (!hb.hub_gps_valid) {
-            state.gpsState.satellites =
-              hb.hub_gps_sats ?? state.gpsState.satellites;
-          }
-        }
-        renderGPSBar();
+  // ── New Logs ──────────────────────────────────────────────────
+  es.addEventListener("logs", (e) => {
+    const payload = JSON.parse(e.data);
+    state.logs.unshift(payload.new);
+    prependLogToFeed(payload.new);
+  });
 
-        debouncedRenderDeviceCards();
-        debouncedRenderStats();
-        debouncedUpdateTopbar();
-        if (state.currentView === "devices") renderDevicesFull();
-      },
-    )
-    .subscribe();
+  // ── Heartbeats ────────────────────────────────────────────────
+  es.addEventListener("heartbeats", (e) => {
+    const payload = JSON.parse(e.data);
+    const hb = payload.new;
+    state.deviceStats[hb.device_id] = hb;
 
-  // Age out stale devices every 60s.
-  // If last_seen is > 3 minutes ago and status is "online", flip to "offline".
+    const devIdx = state.devices.findIndex((d) => d.device_id === hb.device_id);
+    const freshDevice = {
+      device_id: hb.device_id,
+      name: hb.device_id,
+      device_type: hb.device_id?.toLowerCase().includes("cam") ? "esp32_cam" : "sensor",
+      status: "online",
+      last_seen: hb.created_at || new Date().toISOString(),
+      ip_address: hb.ip_address || "—",
+      firmware_version: hb.firmware_version || "—",
+    };
+    if (devIdx >= 0) {
+      state.devices[devIdx] = { ...state.devices[devIdx], ...freshDevice };
+    } else {
+      state.devices.unshift(freshDevice);
+    }
+
+    if (hb.hub_gps_sats !== undefined) state.gpsState.satellites = hb.hub_gps_sats;
+    if (hb.hub_gps_valid !== undefined) {
+      state.gpsState.valid = !!hb.hub_gps_valid;
+      if (!hb.hub_gps_valid) {
+        state.gpsState.satellites = hb.hub_gps_sats ?? state.gpsState.satellites;
+      }
+    }
+    renderGPSBar();
+
+    debouncedRenderDeviceCards();
+    debouncedRenderStats();
+    debouncedUpdateTopbar();
+    if (state.currentView === "devices") renderDevicesFull();
+  });
+
+  // Age out stale devices every 60s
   setInterval(() => {
-    const STALE_MS = 3 * 60 * 1000; // 3 minutes = 2 missed heartbeats
     let changed = false;
     state.devices.forEach((d) => {
       if (computeLiveStatus(d) === "offline" && d.status !== "offline") {
@@ -1459,8 +1490,6 @@ function setupRealtime() {
       if (state.currentView === "devices") renderDevicesFull();
     }
   }, 60_000);
-
-  updateRealtimeIndicator(true);
 }
 
 function updateRealtimeIndicator(connected) {

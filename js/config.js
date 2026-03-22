@@ -11,7 +11,7 @@ window.SENTINEL_CONFIG = {
   // Your Render service URL (no trailing slash).
   // After deploying to Render, replace this with your actual URL.
   // Format: "https://your-service-name.onrender.com"
-  SENTINEL_SERVER_URL: "https://motion-detection-system-jai3.onrender.com",
+  SENTINEL_SERVER_URL: "http://127.0.0.1:3000",
 
   // ── Device ID ─────────────────────────────────────────────
   CAM_DEVICES: [

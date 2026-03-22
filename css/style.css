@@ -484,11 +484,13 @@ a {
 }
 
 /* ============================================================ MAIN */
+/* Lock main to viewport — each view fills this space, inner areas scroll */
 .main {
   background: var(--void);
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  height: calc(100vh - var(--topbar-h));
 }
 
 .view {
@@ -497,12 +499,13 @@ a {
 .view.active {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  height: 100%;
+  overflow: hidden;
 }
 
 /* ============================================================ VIEW HEADER */
 .view-header {
-  padding: 28px 36px 22px;
+  padding: 16px 24px 14px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: flex-end;
@@ -516,7 +519,7 @@ a {
 
 .view-title {
   font-family: var(--font-display);
-  font-size: 30px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--white);
@@ -657,9 +660,12 @@ a {
 }
 
 /* ============================================================ CONTENT */
+/* view-content grows to fill remaining height and scrolls internally */
 .view-content {
-  padding: 28px 36px;
+  padding: 14px 24px;
   flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 /* ============================================================ GPS STATUS PANEL */
@@ -671,26 +677,26 @@ a {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  margin-bottom: 16px;
+  margin-bottom: 10px;
 }
 
 .gps-main {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px 24px;
+  gap: 14px;
+  padding: 10px 18px;
   flex: 1;
 }
 
 .gps-icon-wrap {
-  width: 48px;
-  height: 48px;
+  width: 38px;
+  height: 38px;
   border-radius: var(--radius);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 22px;
+  font-size: 18px;
   background: var(--surface-3);
   border: 1px solid var(--border);
 }
@@ -721,10 +727,10 @@ a {
 }
 .gps-fix-label {
   font-family: var(--font-display);
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--white);
-  margin-bottom: 2px;
+  margin-bottom: 1px;
 }
 .gps-fix-label.fix-none {
   color: var(--white-45);
@@ -756,12 +762,12 @@ a {
 }
 
 .gps-stat {
-  padding: 14px 22px;
+  padding: 10px 16px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 3px;
-  min-width: 120px;
+  gap: 2px;
+  min-width: 100px;
 }
 
 .gps-stat-label {
@@ -806,15 +812,15 @@ a {
 .stats-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .stat-card {
   background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 16px 20px;
+  padding: 10px 14px;
   position: relative;
   overflow: hidden;
   transition:
@@ -849,12 +855,12 @@ a {
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--white-45);
-  margin-bottom: 10px;
+  margin-bottom: 4px;
 }
 
 .stat-value {
   font-family: var(--font-display);
-  font-size: 40px;
+  font-size: 28px;
   font-weight: 700;
   line-height: 1;
   color: var(--white);
@@ -873,27 +879,27 @@ a {
 
 .stat-sub {
   font-family: var(--font-data);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--white-45);
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
 /* ============================================================ DASHBOARD GRID */
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 14px;
+  grid-template-columns: 1fr 300px;
+  gap: 10px;
 }
 
 .dashboard-left {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 .dashboard-right {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 
 /* ============================================================ PANEL */
@@ -908,7 +914,7 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   gap: 12px;
 }
@@ -953,7 +959,18 @@ a {
   position: relative;
   background: #000;
   overflow: hidden;
-  min-height: 120px;
+  min-height: 80px;
+}
+
+/* Compact camera feed for dashboard — shorter height, no scroll */
+.live-feed-wrap--compact {
+  max-height: 165px;
+}
+.live-feed-wrap--compact .live-img {
+  aspect-ratio: unset;
+  height: 165px;
+  width: 100%;
+  object-fit: cover;
 }
 
 .live-img {
@@ -1092,7 +1109,7 @@ a {
 
 /* ============================================================ EVENT FEED */
 .event-feed {
-  max-height: 250px;
+  max-height: 200px;
   overflow-y: auto;
 }
 
@@ -1248,7 +1265,7 @@ a {
 
 /* ============================================================ MAP */
 #map {
-  height: 180px;
+  height: 155px;
   background: var(--surface-3);
 }
 
@@ -1362,7 +1379,7 @@ a {
 
 /* ============================================================ LOG FEED */
 .log-feed {
-  max-height: 180px;
+  max-height: 145px;
   overflow-y: auto;
 }
 
@@ -1437,6 +1454,7 @@ a {
 /* ============================================================ GALLERY */
 .gallery-filters {
   display: flex;
+  align-items: center;
   gap: 8px;
   padding: 18px 36px;
   border-bottom: 1px solid var(--border);
@@ -3411,3 +3429,132 @@ body {
     display: none;
   }
 }
+
+/* ============================================================
+   SINGLE-VIEWPORT PAGE LAYOUTS
+   Each view fills calc(100vh - topbar-h) with view-header fixed
+   and the content area scrolling internally.
+   ============================================================ */
+
+/* ── LIVE CAMERA VIEW ──────────────────────────────────────── */
+#view-live {
+  overflow: hidden;
+}
+#view-live .live-view-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 14px;
+  padding: 14px 24px;
+  min-height: 0;
+  overflow: hidden;
+}
+/* Full-size camera panel fills its column */
+#view-live .live-panel-full {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+#view-live .live-panel-full .live-feed-wrap {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+#view-live .live-panel-full .live-img {
+  height: 100%;
+  width: 100%;
+  aspect-ratio: unset;
+  object-fit: contain;
+}
+/* Side info panel scrolls internally */
+#view-live .live-side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* ── GALLERY / SNAPSHOTS VIEW ──────────────────────────────── */
+/* filter bar stays pinned when scrolling the window */
+#view-gallery .gallery-filters {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 10px 24px;
+}
+
+/* Override gallery-grid's static padding set by the global rule */
+.gallery-grid {
+  padding: 14px 24px;
+}
+
+/* ── GPS MAP VIEW ───────────────────────────────────────────── */
+#view-map {
+  overflow: hidden;
+}
+#view-map .map-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+#view-map #map-full {
+  position: absolute;
+  inset: 0;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+/* ── DEVICES VIEW ───────────────────────────────────────────── */
+#view-devices {
+  overflow: hidden;
+}
+#view-devices .devices-page {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 18px 24px;
+  gap: 16px;
+}
+
+/* ── ACTIVITY LOG VIEW ──────────────────────────────────────── */
+#view-logs {
+  overflow: hidden;
+}
+#view-logs .view-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+#view-logs .panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+#view-logs #log-full {
+  flex: 1;
+  overflow-y: auto;
+  max-height: none !important;
+}
+
+/* ── MOBILE overrides for viewport locking ───────────────────── */
+@media (max-width: 768px) {
+  .main {
+    height: auto;
+    overflow-y: auto;
+  }
+  .view.active {
+    height: auto;
+    overflow: visible;
+  }
+  #view-live .live-view-body {
+    grid-template-columns: 1fr;
+  }
+  #view-map .map-body {
+    min-height: 400px;
+  }
+}
+
